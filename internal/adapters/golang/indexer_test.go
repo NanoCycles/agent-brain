@@ -37,3 +37,107 @@ func (User) Name() string { return "" }
 		t.Fatalf("unexpected parsed file: %#v", f)
 	}
 }
+
+func TestIndexerExtractsGraphQLSchemaContracts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "graph")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema := `type Project {
+  id: ID!
+  items(first: Int): [Item!]!
+  count: Int!
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(schema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range idx.Files {
+		for _, c := range f.Contracts {
+			if c.Kind == "GraphQLField" && c.Name == "Project.count" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected Project.count GraphQL field contract: %#v", idx.Files)
+	}
+}
+
+func TestIndexerExtractsProtoContracts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "proto")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proto := `syntax = "proto3";
+service ProjectService {
+  rpc ListProjects (ListProjectsRequest) returns (ListProjectsResponse);
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "project.proto"), []byte(proto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range idx.Files {
+		for _, c := range f.Contracts {
+			if c.Kind == "GRPCMethod" && c.Name == "ProjectService.ListProjects" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected gRPC method contract: %#v", idx.Files)
+	}
+}
+
+func TestIndexerExtractsRESTRouteContracts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "internal", "adapters", "http")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package http
+import "net/http"
+func Register() {
+  http.HandleFunc("/projects", func(w http.ResponseWriter, r *http.Request) {})
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "routes.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range idx.Files {
+		for _, c := range f.Contracts {
+			if c.Kind == "RESTEndpoint" && c.Name == "HTTP /projects" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected REST endpoint contract: %#v", idx.Files)
+	}
+}

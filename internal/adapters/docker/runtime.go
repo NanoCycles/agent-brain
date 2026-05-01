@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/NanoCycles/agent-brain/internal/domain"
@@ -20,9 +21,9 @@ func (Runtime) DockerAvailable(ctx context.Context) bool {
 	return cmd.Run() == nil
 }
 
-func (Runtime) Neo4jRunning(ctx context.Context) bool {
+func (Runtime) Neo4jRunning(ctx context.Context, spec ports.RuntimeSpec) bool {
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", "127.0.0.1:7687")
+	conn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", spec.Neo4jBoltPort))
 	if err != nil {
 		return false
 	}
@@ -30,67 +31,78 @@ func (Runtime) Neo4jRunning(ctx context.Context) bool {
 	return true
 }
 
-func (r Runtime) Up(ctx context.Context, composePath string) error {
+func (r Runtime) Up(ctx context.Context, spec ports.RuntimeSpec) error {
 	if !r.DockerAvailable(ctx) {
 		return fmt.Errorf("docker is not available. Start Docker Desktop or your Docker daemon, then run agent-brain up again")
 	}
-	if err := writeComposeIfMissing(composePath); err != nil {
+	if err := writeCompose(spec); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composePath, "up", "-d")
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", spec.Namespace, "-f", spec.ComposePath, "up", "-d")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker compose up failed: %w: %s", err, string(out))
 	}
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
-		if r.Neo4jRunning(ctx) {
+		if r.Neo4jRunning(ctx, spec) {
 			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("neo4j did not become reachable on bolt://localhost:7687")
+	return fmt.Errorf("neo4j did not become reachable on bolt://localhost:%d", spec.Neo4jBoltPort)
 }
 
-func (Runtime) Down(ctx context.Context, composePath string) error {
-	if _, err := os.Stat(composePath); err != nil {
+func (Runtime) Down(ctx context.Context, spec ports.RuntimeSpec) error {
+	if _, err := os.Stat(spec.ComposePath); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composePath, "down")
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", spec.Namespace, "-f", spec.ComposePath, "down")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("docker compose down failed: %w: %s", err, string(out))
 	}
 	return nil
 }
 
-func (r Runtime) Status(ctx context.Context) ports.RuntimeStatus {
-	return ports.RuntimeStatus{DockerAvailable: r.DockerAvailable(ctx), Neo4jRunning: r.Neo4jRunning(ctx)}
+func (r Runtime) Status(ctx context.Context, spec ports.RuntimeSpec) ports.RuntimeStatus {
+	return ports.RuntimeStatus{DockerAvailable: r.DockerAvailable(ctx), Neo4jRunning: r.Neo4jRunning(ctx, spec)}
 }
 
 func (Runtime) GraphStats(ctx context.Context) (domain.GraphStats, error) {
 	return domain.GraphStats{}, nil
 }
 
-func writeComposeIfMissing(path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+func writeCompose(spec ports.RuntimeSpec) error {
+	if err := os.MkdirAll(filepath.Dir(spec.ComposePath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(ComposeYAML), 0o644)
+	return os.WriteFile(spec.ComposePath, []byte(renderCompose(spec)), 0o644)
 }
 
-const ComposeYAML = `services:
+func renderCompose(spec ports.RuntimeSpec) string {
+	auth := spec.Neo4jUser + "/" + spec.Neo4jPassword
+	yml := `services:
   neo4j:
     image: neo4j:5-community
-    container_name: agent-brain-neo4j
+    container_name: ${CONTAINER}
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "${HTTP_PORT}:7474"
+      - "${BOLT_PORT}:7687"
     environment:
-      NEO4J_AUTH: neo4j/agentbrain
+      NEO4J_AUTH: ${AUTH}
     volumes:
-      - agent-brain-neo4j-data:/data
+      - ${VOLUME}:/data
 volumes:
-  agent-brain-neo4j-data:
+  ${VOLUME}:
 `
+	replacements := map[string]string{
+		"${CONTAINER}": spec.ContainerName,
+		"${HTTP_PORT}": fmt.Sprintf("%d", spec.Neo4jHTTPPort),
+		"${BOLT_PORT}": fmt.Sprintf("%d", spec.Neo4jBoltPort),
+		"${AUTH}":      auth,
+		"${VOLUME}":    spec.VolumeName,
+	}
+	for from, to := range replacements {
+		yml = strings.ReplaceAll(yml, from, to)
+	}
+	return yml
+}

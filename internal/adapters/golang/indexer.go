@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,12 +50,15 @@ func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, er
 			}
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
+		if d.IsDir() {
 			return nil
 		}
-		file, nodes, rels, err := parseGoFile(repoRoot, rel, path, repo, now)
+		file, nodes, rels, err := parseFile(repoRoot, rel, path, repo, now)
 		if err != nil {
 			return err
+		}
+		if file.Path == "" {
+			return nil
 		}
 		index.Files = append(index.Files, file)
 		index.Nodes = append(index.Nodes, nodes...)
@@ -62,6 +66,20 @@ func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, er
 		return nil
 	})
 	return index, err
+}
+
+func parseFile(repoRoot, rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
+	lower := strings.ToLower(rel)
+	switch {
+	case strings.HasSuffix(lower, ".go"):
+		return parseGoFile(repoRoot, rel, abs, repo, now)
+	case strings.HasSuffix(lower, ".graphql"), strings.HasSuffix(lower, ".graphqls"):
+		return parseGraphQLSchemaFile(rel, abs, repo, now)
+	case strings.HasSuffix(lower, ".proto"):
+		return parseProtoFile(rel, abs, repo, now)
+	default:
+		return domain.IndexedFile{}, nil, nil, nil
+	}
 }
 
 func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
@@ -91,6 +109,10 @@ func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Tim
 		relate("Repository", repo.Root, "File", rel, "CONTAINS", repo.Root),
 		relate("Package", pkgPath, "File", rel, "CONTAINS", repo.Root),
 		relate("File", rel, "Layer", layer, "BELONGS_TO_LAYER", repo.Root),
+	}
+	if !strings.HasSuffix(strings.ToLower(rel), "_test.go") {
+		contracts := detectGoContracts(rel, string(src), parsed, file)
+		file.Contracts = append(file.Contracts, contracts...)
 	}
 	for _, decl := range parsed.Decls {
 		switch d := decl.(type) {
@@ -133,6 +155,45 @@ func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Tim
 			}
 		}
 	}
+	appendContractNodes(&nodes, &rels, rel, repo, parsed.Name.Name, layer, now, file.Contracts)
+	return file, nodes, rels, nil
+}
+
+func parseGraphQLSchemaFile(rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return domain.IndexedFile{}, nil, nil, err
+	}
+	layer := DetectLayer(rel)
+	file := domain.IndexedFile{Path: rel, Package: "graphql", Layer: layer, Hash: hash(src), IndexedAt: now}
+	file.Contracts = detectGraphQLSchemaContracts(rel, string(src))
+	fileNode := node("File", rel, rel, repo, file.Package, layer, now)
+	layerNode := node("Layer", layer, layer, repo, "", layer, now)
+	nodes := []domain.GraphNode{fileNode, layerNode}
+	rels := []domain.GraphRelationship{
+		relate("Repository", repo.Root, "File", rel, "CONTAINS", repo.Root),
+		relate("File", rel, "Layer", layer, "BELONGS_TO_LAYER", repo.Root),
+	}
+	appendContractNodes(&nodes, &rels, rel, repo, file.Package, layer, now, file.Contracts)
+	return file, nodes, rels, nil
+}
+
+func parseProtoFile(rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return domain.IndexedFile{}, nil, nil, err
+	}
+	layer := DetectLayer(rel)
+	file := domain.IndexedFile{Path: rel, Package: "proto", Layer: layer, Hash: hash(src), IndexedAt: now}
+	file.Contracts = detectProtoContracts(rel, string(src))
+	fileNode := node("File", rel, rel, repo, file.Package, layer, now)
+	layerNode := node("Layer", layer, layer, repo, "", layer, now)
+	nodes := []domain.GraphNode{fileNode, layerNode}
+	rels := []domain.GraphRelationship{
+		relate("Repository", repo.Root, "File", rel, "CONTAINS", repo.Root),
+		relate("File", rel, "Layer", layer, "BELONGS_TO_LAYER", repo.Root),
+	}
+	appendContractNodes(&nodes, &rels, rel, repo, file.Package, layer, now, file.Contracts)
 	return file, nodes, rels, nil
 }
 
@@ -145,9 +206,9 @@ func DetectLayer(path string) string {
 		return "application"
 	case strings.Contains(p, "internal/adapters/http"):
 		return "adapter_rest"
-	case strings.Contains(p, "internal/adapters/graphql"):
+	case strings.Contains(p, "internal/adapters/graphql"), strings.Contains(p, "graph/"), strings.Contains(p, "graphql"):
 		return "adapter_graphql"
-	case strings.Contains(p, "internal/adapters/grpc"):
+	case strings.Contains(p, "internal/adapters/grpc"), strings.Contains(p, "grpc"), strings.Contains(p, "proto"):
 		return "adapter_grpc"
 	case strings.Contains(p, "internal/adapters/events"):
 		return "adapter_events"
@@ -157,6 +218,179 @@ func DetectLayer(path string) string {
 		return "entrypoint"
 	default:
 		return "unknown"
+	}
+}
+
+func detectGoContracts(rel, src string, parsed *ast.File, file domain.IndexedFile) []domain.Contract {
+	path := filepath.ToSlash(strings.ToLower(rel))
+	hay := path + " " + strings.ToLower(file.Package) + " " + strings.Join(file.Imports, " ") + " " + strings.ToLower(src)
+	var out []domain.Contract
+	if strings.Contains(hay, "graphql") || strings.Contains(hay, "gqlgen") || strings.Contains(hay, "resolver") || strings.Contains(path, "graph/") {
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			recv := receiverName(fn.Recv)
+			name := fn.Name.Name
+			if strings.Contains(strings.ToLower(recv+" "+name), "resolver") || strings.Contains(path, "resolver") || strings.Contains(path, "graphql") {
+				out = append(out, domain.Contract{Kind: "GraphQLField", Name: strings.TrimPrefix(recv+"."+name, "."), Path: rel, Operation: "resolve", Evidence: "GraphQL resolver function or method", Confidence: 0.85})
+			}
+		}
+	}
+	out = append(out, detectRESTContracts(rel, src)...)
+	out = append(out, detectEventContracts(rel, parsed, hay)...)
+	out = append(out, detectPersistenceContracts(rel, parsed, hay)...)
+	return out
+}
+
+func detectGraphQLSchemaContracts(rel, src string) []domain.Contract {
+	var out []domain.Contract
+	typeRe := regexp.MustCompile(`(?m)^\s*(type|interface|input|enum)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	fieldRe := regexp.MustCompile(`(?m)^\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*:`)
+	currentType := ""
+	for _, line := range strings.Split(src, "\n") {
+		if m := typeRe.FindStringSubmatch(line); len(m) == 3 {
+			currentType = m[2]
+			out = append(out, domain.Contract{Kind: "Contract", Name: "GraphQLType." + currentType, Path: rel, Operation: m[1], Evidence: "GraphQL schema type declaration", Confidence: 0.95})
+			continue
+		}
+		if currentType != "" {
+			if strings.Contains(line, "}") {
+				currentType = ""
+				continue
+			}
+			if m := fieldRe.FindStringSubmatch(line); len(m) == 2 {
+				out = append(out, domain.Contract{Kind: "GraphQLField", Name: currentType + "." + m[1], Path: rel, Operation: "field", Evidence: "GraphQL schema field", Confidence: 0.95})
+			}
+		}
+	}
+	return out
+}
+
+func detectProtoContracts(rel, src string) []domain.Contract {
+	var out []domain.Contract
+	serviceRe := regexp.MustCompile(`(?m)^\s*service\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	rpcRe := regexp.MustCompile(`(?m)^\s*rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	currentService := ""
+	for _, line := range strings.Split(src, "\n") {
+		if m := serviceRe.FindStringSubmatch(line); len(m) == 2 {
+			currentService = m[1]
+			out = append(out, domain.Contract{Kind: "Contract", Name: "GRPCService." + currentService, Path: rel, Operation: "service", Evidence: "protobuf service declaration", Confidence: 0.95})
+			continue
+		}
+		if strings.Contains(line, "}") {
+			currentService = ""
+		}
+		if m := rpcRe.FindStringSubmatch(line); len(m) == 2 {
+			name := m[1]
+			if currentService != "" {
+				name = currentService + "." + name
+			}
+			out = append(out, domain.Contract{Kind: "GRPCMethod", Name: name, Path: rel, Operation: "rpc", Evidence: "protobuf rpc declaration", Confidence: 0.95})
+		}
+	}
+	return out
+}
+
+func detectRESTContracts(rel, src string) []domain.Contract {
+	var out []domain.Contract
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(GET|POST|PUT|PATCH|DELETE)\s+["` + "`" + `]([^"` + "`" + `]+)["` + "`" + `]`),
+		regexp.MustCompile(`(?i)\.(Get|Post|Put|Patch|Delete|Handle|HandleFunc)\s*\(\s*["` + "`" + `]([^"` + "`" + `]+)["` + "`" + `]`),
+		regexp.MustCompile(`http\.HandleFunc\s*\(\s*["` + "`" + `]([^"` + "`" + `]+)["` + "`" + `]`),
+	}
+	for _, re := range patterns {
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			method := "HTTP"
+			route := ""
+			if len(m) == 3 {
+				method = strings.ToUpper(m[1])
+				route = m[2]
+			} else if len(m) == 2 {
+				route = m[1]
+			}
+			if route != "" && strings.HasPrefix(route, "/") {
+				out = append(out, domain.Contract{Kind: "RESTEndpoint", Name: method + " " + route, Path: rel, Operation: method, Evidence: "REST route registration", Confidence: 0.85})
+			}
+		}
+	}
+	return out
+}
+
+func detectEventContracts(rel string, parsed *ast.File, hay string) []domain.Contract {
+	if !(strings.Contains(hay, "event") || strings.Contains(hay, "consumer") || strings.Contains(hay, "producer") || strings.Contains(hay, "kafka") || strings.Contains(hay, "pubsub")) {
+		return nil
+	}
+	var out []domain.Contract
+	for _, decl := range parsed.Decls {
+		if ts, ok := typeSpec(decl); ok {
+			name := strings.ToLower(ts.Name.Name)
+			if strings.Contains(name, "event") || strings.Contains(name, "message") || strings.Contains(name, "consumer") || strings.Contains(name, "producer") {
+				kind := "HANDLES"
+				if strings.Contains(name, "producer") || strings.Contains(name, "published") {
+					kind = "PUBLISHES"
+				}
+				out = append(out, domain.Contract{Kind: "EventType", Name: ts.Name.Name, Path: rel, Operation: kind, Evidence: "event-related type declaration", Confidence: 0.75})
+			}
+		}
+	}
+	return out
+}
+
+func detectPersistenceContracts(rel string, parsed *ast.File, hay string) []domain.Contract {
+	if !(strings.Contains(hay, "repository") || strings.Contains(hay, "store") || strings.Contains(hay, "dao") || strings.Contains(hay, "postgres") || strings.Contains(hay, "mysql") || strings.Contains(hay, "sqlite")) {
+		return nil
+	}
+	var out []domain.Contract
+	for _, decl := range parsed.Decls {
+		if ts, ok := typeSpec(decl); ok {
+			name := strings.ToLower(ts.Name.Name)
+			if strings.Contains(name, "repository") || strings.Contains(name, "store") || strings.Contains(name, "dao") {
+				out = append(out, domain.Contract{Kind: "Contract", Name: "DB." + ts.Name.Name, Path: rel, Operation: "persistence", Evidence: "repository/store/dao type declaration", Confidence: 0.7})
+			}
+		}
+	}
+	return out
+}
+
+func typeSpec(decl ast.Decl) (*ast.TypeSpec, bool) {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil, false
+	}
+	for _, spec := range gen.Specs {
+		if ts, ok := spec.(*ast.TypeSpec); ok {
+			return ts, true
+		}
+	}
+	return nil, false
+}
+
+func appendContractNodes(nodes *[]domain.GraphNode, rels *[]domain.GraphRelationship, filePath string, repo domain.Repository, pkg, layer string, now time.Time, contracts []domain.Contract) {
+	for _, c := range contracts {
+		label := c.Kind
+		if label == "" {
+			label = "Contract"
+		}
+		key := filePath + "#contract:" + c.Kind + ":" + c.Name
+		n := node(label, c.Name, key, repo, pkg, layer, now)
+		n.Source = "contract-extractor"
+		n.Confidence = c.Confidence
+		n.Properties = map[string]any{"operation": c.Operation, "evidence": c.Evidence}
+		*nodes = append(*nodes, n)
+		relType := "EXPOSES"
+		switch c.Kind {
+		case "EventType":
+			if c.Operation == "PUBLISHES" {
+				relType = "PUBLISHES"
+			} else {
+				relType = "HANDLES"
+			}
+		case "GRPCMethod", "RESTEndpoint", "GraphQLField":
+			relType = "EXPOSES"
+		}
+		*rels = append(*rels, relate("File", filePath, label, key, relType, repo.Root))
 	}
 }
 

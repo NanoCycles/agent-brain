@@ -35,7 +35,7 @@ agent-brain index --repo .
 agent-brain context --task .ai/tasks/TICKET.md
 ```
 
-Neo4j runs locally at [http://localhost:7474](http://localhost:7474) with user `neo4j` and password `agentbrain`.
+Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized repository gets its own `project_id`, Docker Compose project, Neo4j container, persistent volume, and SQLite database under `.agent-brain/runtime/`, so local projects do not share graph or metadata state. Check the exact HTTP/Bolt ports with `agent-brain status`.
 
 ## Flow With Codex/Cursor
 

@@ -15,7 +15,7 @@ func TestTaskIDFromPath(t *testing.T) {
 }
 
 func TestRenderMarkdownBasic(t *testing.T) {
-	p := domain.ContextPack{TaskID: "TASK-1", TaskSummary: "Fix thing", DetectedTopics: []string{"graphql"}, LikelyRelevantFiles: []string{"internal/adapters/graphql/resolver.go"}}
+	p := domain.ContextPack{TaskID: "TASK-1", TaskSummary: "Fix thing", DetectedTopics: []string{"graphql"}, LikelyRelevantFiles: []domain.FileCandidate{{Path: "internal/adapters/graphql/resolver.go"}}}
 	md := RenderMarkdown(p)
 	if md == "" || !contains(md, "# Agent Context Pack") || !contains(md, "## Likely Relevant Files") {
 		t.Fatalf("unexpected markdown: %s", md)

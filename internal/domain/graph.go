@@ -62,6 +62,15 @@ type Test struct {
 	Line int
 }
 
+type Contract struct {
+	Kind       string  `json:"kind" yaml:"kind"`
+	Name       string  `json:"name" yaml:"name"`
+	Path       string  `json:"path" yaml:"path"`
+	Operation  string  `json:"operation" yaml:"operation"`
+	Evidence   string  `json:"evidence" yaml:"evidence"`
+	Confidence float64 `json:"confidence" yaml:"confidence"`
+}
+
 type CodeIndex struct {
 	Repository Repository
 	Files      []IndexedFile

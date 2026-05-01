@@ -28,16 +28,29 @@ func (s *Store) SaveIndex(ctx context.Context, index domain.CodeIndex) error {
 	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		if _, err := tx.Run(ctx, `match (n {repo:$repo}) detach delete n`, map[string]any{"repo": index.Repository.Root}); err != nil {
+			return nil, err
+		}
 		if _, err := tx.Run(ctx, `merge (r:Repository {path:$path}) set r.name=$name, r.repo=$repo, r.commit_sha=$commit, r.indexed_at=$indexed_at, r.source='agent-brain', r.confidence=1.0`,
 			map[string]any{"path": index.Repository.Root, "name": index.Repository.Name, "repo": index.Repository.Root, "commit": index.Repository.CommitSHA, "indexed_at": index.Repository.IndexedAt}); err != nil {
 			return nil, err
 		}
 		for _, n := range index.Nodes {
-			q := fmt.Sprintf(`merge (n:%s {repo:$repo, name:$name, path:$path}) set n.package=$package, n.layer=$layer, n.commit_sha=$commit, n.indexed_at=$indexed_at, n.source=$source, n.confidence=$confidence`, n.Label)
-			if _, err := tx.Run(ctx, q, map[string]any{
+			q := fmt.Sprintf(`merge (n:%s {repo:$repo, name:$name, path:$path}) set n.package=$package, n.layer=$layer, n.commit_sha=$commit, n.indexed_at=$indexed_at, n.source=$source, n.confidence=$confidence, n.operation=$operation, n.evidence=$evidence`, n.Label)
+			params := map[string]any{
 				"repo": n.Repo, "name": n.Name, "path": n.Path, "package": n.Package, "layer": n.Layer,
 				"commit": n.CommitSHA, "indexed_at": n.IndexedAt, "source": n.Source, "confidence": n.Confidence,
-			}); err != nil {
+				"operation": "", "evidence": "",
+			}
+			if n.Properties != nil {
+				if op, ok := n.Properties["operation"].(string); ok {
+					params["operation"] = op
+				}
+				if evidence, ok := n.Properties["evidence"].(string); ok {
+					params["evidence"] = evidence
+				}
+			}
+			if _, err := tx.Run(ctx, q, params); err != nil {
 				return nil, err
 			}
 		}

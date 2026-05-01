@@ -37,11 +37,32 @@ func (s *ReviewService) ReviewPlan(planPath, rulesDir string) (ReviewReport, err
 		return ReviewReport{}, err
 	}
 	topics := DetectTopics(string(data))
+	task := AnalyzeTextAsTask("plan", string(data))
+	analysis := AnalyzeTask(task)
 	var findings []domain.Finding
 	for _, r := range rules.Match(rules.Flatten(sets), topics) {
 		if strings.EqualFold(r.Severity, "critical") || strings.EqualFold(r.Severity, "high") {
 			findings = append(findings, domain.Finding{Severity: r.Severity, Title: r.Title, Message: "Plan must explicitly address this rule.", RuleID: r.ID})
 		}
+	}
+	plan := strings.ToLower(string(data))
+	if analysis.Type == domain.TaskTypeBug && !strings.Contains(plan, "regression") && !strings.Contains(plan, "_test.go") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Regression test missing", Message: "Bug plans must mention a regression test that reproduces the defect."})
+	}
+	if containsString(analysis.ContractImpact, "GraphQL") && !strings.Contains(plan, "contract") && !strings.Contains(plan, "schema") {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "Public contract impact not addressed", Message: "Plan should explicitly state whether GraphQL schema/contract changes are required."})
+	}
+	if strings.Contains(plan, "schema") && !strings.Contains(plan, "approval") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Schema approval missing", Message: "Plans that touch schema must require human approval."})
+	}
+	if analysis.MainCapability == "graphql" && hasTopic(analysis, "nested count") && !strings.Contains(plan, "n+1") && !strings.Contains(plan, "batch") {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "GraphQL count performance risk missing", Message: "Plan should address N+1 count queries or batching for nested counts."})
+	}
+	if analysis.MainCapability == "events" && !strings.Contains(plan, "idempot") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Event idempotency missing", Message: "Event plans must mention idempotency and duplicate delivery handling."})
+	}
+	if (analysis.Type == domain.TaskTypeSecurity || containsString(analysis.Capabilities, "authorization")) && !strings.Contains(plan, "tenant") && !strings.Contains(plan, "project") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Tenant/project isolation missing", Message: "Security plans must verify tenant/project isolation."})
 	}
 	decision := domain.Approved
 	if len(findings) > 0 {

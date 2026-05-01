@@ -65,7 +65,7 @@ func (s *Store) SaveIndexedFiles(ctx context.Context, repoRoot string, files []d
 	}
 	defer tx.Rollback()
 	for _, f := range files {
-		symbols, _ := json.Marshal(map[string]any{"structs": f.Structs, "interfaces": f.Interfaces, "functions": f.Functions, "methods": f.Methods, "tests": f.Tests})
+		symbols, _ := json.Marshal(map[string]any{"structs": f.Structs, "interfaces": f.Interfaces, "functions": f.Functions, "methods": f.Methods, "tests": f.Tests, "contracts": f.Contracts})
 		imports, _ := json.Marshal(f.Imports)
 		_, err := tx.ExecContext(ctx, `insert into indexed_files(repo_root,path,package,layer,hash,indexed_at,symbols_json,imports_json) values(?,?,?,?,?,?,?,?)
 			on conflict(repo_root,path) do update set package=excluded.package, layer=excluded.layer, hash=excluded.hash, indexed_at=excluded.indexed_at, symbols_json=excluded.symbols_json, imports_json=excluded.imports_json`,
@@ -75,6 +75,41 @@ func (s *Store) SaveIndexedFiles(ctx context.Context, repoRoot string, files []d
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) IndexedFiles(ctx context.Context, repoRoot string) ([]domain.IndexedFile, error) {
+	rows, err := s.db.QueryContext(ctx, `select path, package, layer, hash, indexed_at, symbols_json, imports_json from indexed_files where repo_root=? order by path`, repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var files []domain.IndexedFile
+	for rows.Next() {
+		var f domain.IndexedFile
+		var indexedAt, symbolsJSON, importsJSON string
+		if err := rows.Scan(&f.Path, &f.Package, &f.Layer, &f.Hash, &indexedAt, &symbolsJSON, &importsJSON); err != nil {
+			return nil, err
+		}
+		f.IndexedAt, _ = time.Parse(time.RFC3339, indexedAt)
+		var symbols struct {
+			Structs    []domain.Struct    `json:"structs"`
+			Interfaces []domain.Interface `json:"interfaces"`
+			Functions  []domain.Function  `json:"functions"`
+			Methods    []domain.Method    `json:"methods"`
+			Tests      []domain.Test      `json:"tests"`
+			Contracts  []domain.Contract  `json:"contracts"`
+		}
+		_ = json.Unmarshal([]byte(symbolsJSON), &symbols)
+		_ = json.Unmarshal([]byte(importsJSON), &f.Imports)
+		f.Structs = symbols.Structs
+		f.Interfaces = symbols.Interfaces
+		f.Functions = symbols.Functions
+		f.Methods = symbols.Methods
+		f.Tests = symbols.Tests
+		f.Contracts = symbols.Contracts
+		files = append(files, f)
+	}
+	return files, rows.Err()
 }
 
 func (s *Store) LastIndexRun(ctx context.Context, repoRoot string) (*domain.IndexRun, error) {

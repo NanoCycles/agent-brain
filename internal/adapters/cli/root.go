@@ -54,10 +54,15 @@ func upCmd(ctx context.Context) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := app.NewRuntimeService(dockerruntime.Runtime{}, nil).Up(ctx, p.ComposePath); err != nil {
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Neo4j is running: http://localhost:7474 (neo4j / agentbrain)")
+			spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+			if err := app.NewRuntimeService(dockerruntime.Runtime{}, nil).Up(ctx, spec); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Neo4j is running for project %s: http://localhost:%d (%s / %s)\n", cfg.ProjectID, cfg.Neo4jHTTPPort, cfg.Neo4jUser, cfg.Neo4jPassword)
 			return nil
 		},
 	}
@@ -72,10 +77,14 @@ func downCmd(ctx context.Context) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := app.NewRuntimeService(dockerruntime.Runtime{}, nil).Down(ctx, p.ComposePath); err != nil {
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "agent-brain services stopped")
+			if err := app.NewRuntimeService(dockerruntime.Runtime{}, nil).Down(ctx, app.RuntimeSpecFromConfig(cfg, p.ComposePath)); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent-brain services stopped for project %s\n", cfg.ProjectID)
 			return nil
 		},
 	}
@@ -90,11 +99,16 @@ func statusCmd(ctx context.Context) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
+				return err
+			}
 			graph := graphOrNil(p.ConfigPath)
 			if graph != nil {
 				defer graph.Close(ctx)
 			}
-			report := app.NewRuntimeService(dockerruntime.Runtime{}, graph).Status(ctx)
+			spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+			report := app.NewRuntimeService(dockerruntime.Runtime{}, graph).Status(ctx, spec)
 			repoInitialized := filesystem.LocalFS{}.Exists(p.ConfigPath)
 			store, _ := sqlstore.New(p.SQLitePath)
 			var last string
@@ -104,10 +118,25 @@ func statusCmd(ctx context.Context) *cobra.Command {
 				if run != nil {
 					last = run.CompletedAt.Format("2006-01-02 15:04:05")
 				}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Project ID: %s\nRuntime namespace: %s\nNeo4j HTTP URL: http://localhost:%d\nNeo4j Bolt URI: %s\nDocker available: %s\nNeo4j running: %s\nSQLite metadata path: %s\nRepo initialized: %s\nLast index: %s\nGraph nodes: %d\nGraph relationships: %d\n",
+				cfg.ProjectID, cfg.RuntimeNamespace, cfg.Neo4jHTTPPort, cfg.Neo4jURI, yesNo(report.DockerAvailable), yesNo(report.Neo4jRunning), p.SQLitePath, yesNo(repoInitialized), valueOr(last, "none"), report.GraphStats.Nodes, report.GraphStats.Relationships)
+			if store != nil {
+				files, _ := store.IndexedFiles(ctx, p.Root)
+				caps := app.DetectRepoCapabilities(p.Root, files)
+				fmt.Fprintf(cmd.OutOrStdout(), "Repo capabilities: GraphQL=%s REST=%s gRPC=%s Events=%s Persistence=%s Tests=%s MainLanguage=%s\n",
+					yesNo(caps.HasGraphQL), yesNo(caps.HasREST), yesNo(caps.HasGRPC), yesNo(caps.HasEvents), yesNo(caps.HasPersistence), yesNo(caps.HasTests), caps.MainLanguage)
+				if len(files) > 0 && len(caps.Evidence) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "Warning: repo is indexed but no capabilities were detected")
+				}
+				if len(files) > 0 && !caps.HasTests {
+					fmt.Fprintln(cmd.OutOrStdout(), "Warning: repo is indexed but no tests were detected")
+				}
+				if report.Neo4jRunning && report.GraphStats.Nodes == 0 && len(files) > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "Warning: Neo4j is running but graph appears unsynchronized with SQLite metadata")
+				}
 				_ = store.Close()
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Docker available: %s\nNeo4j running: %s\nSQLite metadata path: %s\nRepo initialized: %s\nLast index: %s\nGraph nodes: %d\nGraph relationships: %d\n",
-				yesNo(report.DockerAvailable), yesNo(report.Neo4jRunning), p.SQLitePath, yesNo(repoInitialized), valueOr(last, "none"), report.GraphStats.Nodes, report.GraphStats.Relationships)
 			return nil
 		},
 	}
@@ -167,7 +196,7 @@ func contextCmd(ctx context.Context) *cobra.Command {
 			}
 			defer store.Close()
 			_ = store.Init(ctx)
-			pack, md, js, err := app.NewContextService(store, graphOrNil(p.ConfigPath)).Generate(ctx, task, p.RulesDir, p.AIContextDir)
+			pack, md, js, err := app.NewContextService(store, graphOrNil(p.ConfigPath)).Generate(ctx, p.Root, task, p.RulesDir, p.AIContextDir)
 			if err != nil {
 				return err
 			}
@@ -189,20 +218,38 @@ func impactCmd(ctx context.Context) *cobra.Command {
 				return fmt.Errorf("--topic is required")
 			}
 			p, _ := paths.Discover(".")
-			graph := graphOrNil(p.ConfigPath)
-			if graph == nil {
-				return fmt.Errorf("neo4j graph is not configured or reachable")
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
 			}
-			defer graph.Close(ctx)
-			nodes, err := graph.SearchImpact(ctx, topic, 20)
+			defer store.Close()
+			_ = store.Init(ctx)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			pack, err := app.NewContextService(store, graph).GenerateForText(ctx, p.Root, "impact", topic, p.RulesDir)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Impact for %q\n", topic)
-			for _, n := range nodes {
-				fmt.Fprintf(cmd.OutOrStdout(), "- %s %s %s [%s]\n", n.Label, n.Name, n.Path, n.Layer)
+			fmt.Fprintf(cmd.OutOrStdout(), "Context quality: %s %.2f\n", pack.ContextQuality.Level, pack.ContextQuality.Score)
+			fmt.Fprintf(cmd.OutOrStdout(), "Main capability: %s\n", pack.TaskAnalysis.MainCapability)
+			fmt.Fprintln(cmd.OutOrStdout(), "Likely files:")
+			if len(pack.LikelyRelevantFiles) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "- No strong relevant files detected.")
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Rules/risks: run context or review-plan for matched structured rules.")
+			for _, c := range pack.LikelyRelevantFiles {
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s [%s %.2f] %s\n", c.Path, c.Category, c.Confidence, c.Reason)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Risks:")
+			for _, r := range append(append(pack.Risks.Security, pack.Risks.Concurrency...), pack.Risks.MemoryPerformance...) {
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", r)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Suggested tests:")
+			for _, t := range pack.SuggestedTests {
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", t)
+			}
 			return nil
 		},
 	}
@@ -312,6 +359,14 @@ func graphOrNil(configPath string) *neo.Store {
 		return nil
 	}
 	return graph
+}
+
+func loadOrDefaultConfig(p paths.ProjectPaths) (app.Config, error) {
+	cfg, err := app.LoadConfig(p.ConfigPath)
+	if err == nil {
+		return cfg, nil
+	}
+	return app.DefaultConfig(p.Root), nil
 }
 
 func printReview(cmd *cobra.Command, report app.ReviewReport) {

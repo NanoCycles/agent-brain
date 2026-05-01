@@ -16,12 +16,12 @@ func NewRuntimeService(runtime ports.RuntimeManager, graph ports.GraphStore) *Ru
 	return &RuntimeService{runtime: runtime, graph: graph}
 }
 
-func (s *RuntimeService) Up(ctx context.Context, composePath string) error {
-	return s.runtime.Up(ctx, composePath)
+func (s *RuntimeService) Up(ctx context.Context, spec ports.RuntimeSpec) error {
+	return s.runtime.Up(ctx, spec)
 }
 
-func (s *RuntimeService) Down(ctx context.Context, composePath string) error {
-	return s.runtime.Down(ctx, composePath)
+func (s *RuntimeService) Down(ctx context.Context, spec ports.RuntimeSpec) error {
+	return s.runtime.Down(ctx, spec)
 }
 
 type StatusReport struct {
@@ -31,8 +31,8 @@ type StatusReport struct {
 	GraphStatsError string
 }
 
-func (s *RuntimeService) Status(ctx context.Context) StatusReport {
-	st := s.runtime.Status(ctx)
+func (s *RuntimeService) Status(ctx context.Context, spec ports.RuntimeSpec) StatusReport {
+	st := s.runtime.Status(ctx, spec)
 	report := StatusReport{DockerAvailable: st.DockerAvailable, Neo4jRunning: st.Neo4jRunning}
 	if s.graph != nil && st.Neo4jRunning {
 		stats, err := s.graph.Stats(ctx)
@@ -43,4 +43,18 @@ func (s *RuntimeService) Status(ctx context.Context) StatusReport {
 		}
 	}
 	return report
+}
+
+func RuntimeSpecFromConfig(cfg Config, composePath string) ports.RuntimeSpec {
+	cfg = NormalizeConfig(cfg)
+	return ports.RuntimeSpec{
+		ComposePath:   composePath,
+		Namespace:     cfg.RuntimeNamespace,
+		ContainerName: "agent-brain-neo4j-" + cfg.RuntimeNamespace,
+		VolumeName:    "agent-brain-neo4j-data-" + cfg.RuntimeNamespace,
+		Neo4jHTTPPort: cfg.Neo4jHTTPPort,
+		Neo4jBoltPort: cfg.Neo4jBoltPort,
+		Neo4jUser:     cfg.Neo4jUser,
+		Neo4jPassword: cfg.Neo4jPassword,
+	}
 }

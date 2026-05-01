@@ -2,7 +2,9 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/NanoCycles/agent-brain/internal/platform/paths"
 	"github.com/NanoCycles/agent-brain/internal/ports"
@@ -52,8 +54,14 @@ func (s *InitService) Init(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.fs.WriteFileIfMissing(p.ConfigPath, data, 0o644); err != nil {
-		return err
+	if s.fs.Exists(p.ConfigPath) {
+		if err := migrateConfigForProjectIsolation(p.ConfigPath, p.Root); err != nil {
+			return err
+		}
+	} else {
+		if err := s.fs.WriteFileIfMissing(p.ConfigPath, data, 0o644); err != nil {
+			return err
+		}
 	}
 	for name, rs := range DefaultRuleSets() {
 		data, err := yaml.Marshal(rs)
@@ -65,4 +73,43 @@ func (s *InitService) Init(root string) error {
 		}
 	}
 	return nil
+}
+
+func migrateConfigForProjectIsolation(configPath, repoRoot string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	raw := string(data)
+	if cfg.ProjectID != "" && cfg.RuntimeNamespace != "" && cfg.Neo4jHTTPPort != 0 && cfg.Neo4jBoltPort != 0 && containsConfigKey(raw, "project_id") {
+		return nil
+	}
+	projectID := ProjectID(repoRoot)
+	httpPort, boltPort := ProjectPorts(projectID)
+	cfg.ProjectName = filepath.Base(repoRoot)
+	cfg.ProjectID = projectID
+	cfg.RepoRoot = repoRoot
+	cfg.RuntimeNamespace = projectID
+	cfg.Neo4jHTTPPort = httpPort
+	cfg.Neo4jBoltPort = boltPort
+	cfg.Neo4jURI = fmt.Sprintf("bolt://localhost:%d", boltPort)
+	backupPath := configPath + ".bak"
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		if err := os.WriteFile(backupPath, data, 0o644); err != nil {
+			return err
+		}
+	}
+	out, err := cfg.YAML()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, out, 0o644)
+}
+
+func containsConfigKey(raw, key string) bool {
+	return strings.Contains(raw, "\n"+key+":") || strings.HasPrefix(raw, key+":")
 }

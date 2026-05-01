@@ -1,0 +1,6 @@
+name: events
+rules:
+  - id: events.idempotent_consumers
+    title: Consumers must be idempotent.
+    severity: high
+    topics: [events, consumer]

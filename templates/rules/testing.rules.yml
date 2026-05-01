@@ -1,0 +1,6 @@
+name: testing
+rules:
+  - id: testing.functional_unit
+    title: Every functional change requires unit tests.
+    severity: medium
+    topics: [testing]

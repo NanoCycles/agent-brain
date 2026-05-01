@@ -1,0 +1,6 @@
+name: grpc
+rules:
+  - id: grpc.protobuf_approval
+    title: Protobuf changes require human approval.
+    severity: high
+    topics: [grpc, protobuf]

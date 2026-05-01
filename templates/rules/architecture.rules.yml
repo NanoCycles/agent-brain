@@ -1,0 +1,10 @@
+name: architecture
+rules:
+  - id: architecture.hexagonal
+    title: Hexagonal architecture mandatory.
+    severity: high
+    topics: [architecture, layers]
+  - id: architecture.domain_pure
+    title: Domain must not depend on frameworks.
+    severity: high
+    topics: [domain, framework]

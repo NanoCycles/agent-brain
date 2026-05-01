@@ -1,0 +1,11 @@
+.agent-brain/runtime/*.sqlite
+.agent-brain/runtime/*.db
+.idea/
+bin/
+dist/
+coverage/
+.tools/
+.env
+.env.*
+*.pem
+*.key

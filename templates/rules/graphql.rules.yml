@@ -1,0 +1,10 @@
+name: graphql
+rules:
+  - id: graphql.thin_resolvers
+    title: GraphQL resolvers must be thin.
+    severity: medium
+    topics: [graphql]
+  - id: graphql.no_n_plus_one
+    title: Avoid N+1 queries.
+    severity: high
+    topics: [graphql, performance]

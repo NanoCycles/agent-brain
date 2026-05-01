@@ -1,0 +1,6 @@
+name: security
+rules:
+  - id: security.no_secrets_indexing
+    title: No secrets indexing.
+    severity: critical
+    topics: [security, secret]

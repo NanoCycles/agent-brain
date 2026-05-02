@@ -87,7 +87,7 @@ func (s *Server) handle(ctx context.Context, req request) (response, bool) {
 			"capabilities": map[string]any{
 				"tools": map[string]any{"listChanged": false},
 			},
-			"serverInfo": map[string]any{"name": "agent-brain", "version": "0.1.0"},
+			"serverInfo": map[string]any{"name": "agent-brain", "version": "0.1.7"},
 		}}, true
 	case "notifications/initialized":
 		return response{}, false
@@ -138,6 +138,14 @@ func toolError(text string) map[string]any {
 
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
+		tool("start_task", "Agent-first workflow: prepare context, include system memory, and return next actions before editing code.", map[string]any{
+			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
+			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"fast":      map[string]any{"type": "boolean"},
+		}),
+		tool("finish_task", "Agent-first workflow: review current diff and generate implementation/domain memory proposals for human approval.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+		}),
 		tool("prepare_context", "Initialize local runtime if needed, index the current repo unless skipped, generate an agent context pack, and return a compact handoff. Safe: does not modify source code.", map[string]any{
 			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
 			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
@@ -158,6 +166,18 @@ func toolDefinitions() []map[string]any {
 		tool("doctor", "Diagnose local prerequisites and project wiring for agent-brain.", map[string]any{}),
 		tool("memory_proposal", "Generate a structured memory proposal after a task is implemented. Does not apply memory automatically.", map[string]any{
 			"task_path": map[string]any{"type": "string"},
+		}),
+		tool("propose_domain_memory", "Generate a proposed system/domain memory update with evidence. Does not apply automatically.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"area":      map[string]any{"type": "string", "description": "Optional area: graphql, auth, billing, events, persistence, or all"},
+		}),
+		tool("apply_domain_memory", "Apply approved system/domain memory to local file, SQLite, and Neo4j. Call only after human approval.", map[string]any{
+			"proposal_path": map[string]any{"type": "string"},
+			"confirmed":     map[string]any{"type": "boolean"},
+		}),
+		tool("get_system_memory", "Return compact approved system/domain memory relevant to a topic.", map[string]any{
+			"topic": map[string]any{"type": "string"},
+			"area":  map[string]any{"type": "string", "description": "Optional area filter"},
 		}),
 		tool("handoff", "Return the short prompt an agent should follow for a generated context pack.", map[string]any{
 			"task_path":    map[string]any{"type": "string"},
@@ -183,6 +203,10 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 		return "", err
 	}
 	switch name {
+	case "start_task":
+		return startTask(ctx, p, args)
+	case "finish_task":
+		return finishTask(ctx, p, args)
 	case "prepare_context":
 		return prepareContext(ctx, p, args)
 	case "get_context_pack":
@@ -215,6 +239,12 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 			return "", err
 		}
 		return "Memory proposal generated: " + path, nil
+	case "propose_domain_memory":
+		return proposeDomainMemory(ctx, p, stringArg(args, "task_path"), stringArg(args, "area"))
+	case "apply_domain_memory":
+		return applyDomainMemory(ctx, p, stringArg(args, "proposal_path"), boolArg(args, "confirmed"))
+	case "get_system_memory":
+		return getSystemMemory(ctx, p, stringArg(args, "topic"), stringArg(args, "area"))
 	case "handoff":
 		contextPath := contextPathFromArgs(p, args)
 		if contextPath == "" {
@@ -224,6 +254,49 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func startTask(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	args["budget"] = app.BudgetCavernicola
+	text, err := prepareContext(ctx, p, args)
+	if err != nil {
+		return "", err
+	}
+	memory, _ := getSystemMemory(ctx, p, stringArg(args, "topic"), stringArg(args, "area"))
+	return text + "\n\nSystem memory:\n" + memory + "\nNext agent actions:\n- Read the generated context pack.\n- Open only top-ranked files first.\n- Implement the smallest safe change.\n- Run focused tests.\n- Call review_diff before final response.\n- Call finish_task after validation.", nil
+}
+
+func finishTask(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	report, summary, err := app.NewReviewService().ReviewDiff(ctx, p.Root, p.RulesDir)
+	if err != nil {
+		return "", err
+	}
+	taskPath := stringArg(args, "task_path")
+	var memPath, domainPath string
+	if taskPath != "" {
+		store, err := sqlstore.New(p.SQLitePath)
+		if err != nil {
+			return "", err
+		}
+		defer store.Close()
+		_ = store.Init(ctx)
+		memPath, _ = app.NewMemoryService(store).GenerateProposal(ctx, p.Root, taskPath, p.AIMemoryProposals)
+		graph := graphOrNil(p.ConfigPath)
+		if graph != nil {
+			defer graph.Close(ctx)
+		}
+		domainPath, _, _ = app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, taskPath, p.AIMemoryProposals, "")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\nDecision: %s\n", summary, report.Decision)
+	if memPath != "" {
+		fmt.Fprintf(&b, "Implementation memory proposal: %s\n", memPath)
+	}
+	if domainPath != "" {
+		fmt.Fprintf(&b, "Domain memory proposal: %s\nHuman approval required before apply_domain_memory.\n", domainPath)
+		fmt.Fprintf(&b, "Human message: I found possible system/domain memory from this change. Do you approve saving it for future agents?\n")
+	}
+	return b.String(), nil
 }
 
 func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
@@ -264,6 +337,59 @@ func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]a
 	}
 	return fmt.Sprintf("Agent context ready: %s\nJSON: %s\nQuality: %s %.2f\nIndexed: %t\nRuntime started: %t\nTop files: %d\n\nSuggested prompt:\n%s",
 		result.MarkdownPath, result.JSONPath, result.Pack.ContextQuality.Level, result.Pack.ContextQuality.Score, result.Indexed, result.RuntimeUp, len(result.Pack.LikelyRelevantFiles), result.Handoff), nil
+}
+
+func proposeDomainMemory(ctx context.Context, p paths.ProjectPaths, taskPath, area string) (string, error) {
+	store, err := sqlstore.New(p.SQLitePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	_ = store.Init(ctx)
+	graph := graphOrNil(p.ConfigPath)
+	if graph != nil {
+		defer graph.Close(ctx)
+	}
+	path, memory, err := app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, taskPath, p.AIMemoryProposals, area)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Domain memory proposal: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d\nHuman approval required before apply_domain_memory.", path, len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants)), nil
+}
+
+func applyDomainMemory(ctx context.Context, p paths.ProjectPaths, proposalPath string, confirmed bool) (string, error) {
+	if proposalPath == "" {
+		return "", fmt.Errorf("proposal_path is required")
+	}
+	store, err := sqlstore.New(p.SQLitePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	_ = store.Init(ctx)
+	graph := graphOrNil(p.ConfigPath)
+	if graph != nil {
+		defer graph.Close(ctx)
+	}
+	memory, err := app.NewDomainMemoryService(store, graph).Apply(ctx, p.Root, proposalPath, domainMemoryPath(p), confirmed)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Domain memory applied: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d", domainMemoryPath(p), len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants)), nil
+}
+
+func getSystemMemory(ctx context.Context, p paths.ProjectPaths, topic, area string) (string, error) {
+	store, err := sqlstore.New(p.SQLitePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	_ = store.Init(ctx)
+	memory, err := app.NewDomainMemoryService(store, nil).Load(ctx, p.Root, domainMemoryPath(p))
+	if err != nil {
+		return "", err
+	}
+	return app.RenderDomainMemory(memory, topic, area, 8), nil
 }
 
 func getContextPack(p paths.ProjectPaths, args map[string]any) (string, error) {
@@ -354,6 +480,10 @@ func contextPathFromArgs(p paths.ProjectPaths, args map[string]any) string {
 		return ""
 	}
 	return filepath.Join(p.AIContextDir, app.TaskIDFromPath(taskPath)+".agent.md")
+}
+
+func domainMemoryPath(p paths.ProjectPaths) string {
+	return filepath.Join(p.AgentBrainDir, "memory", "domain.yml")
 }
 
 func graphOrNil(configPath string) *neo.Store {

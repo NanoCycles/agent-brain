@@ -37,6 +37,7 @@ func (s *Store) Init(ctx context.Context) error {
 		`create table if not exists context_packs (task_id text primary key, generated_at text, md_path text, json_path text, summary text)`,
 		`create table if not exists memory_proposals (task_id text primary key, path text, created_at text, applied_at text)`,
 		`create table if not exists applied_memories (task_id text primary key, repo_root text, source_path text, applied_at text, lessons_json text, rules_json text, bugs_json text, tests_json text, files_json text, risks_json text)`,
+		`create table if not exists domain_memory (repo_root text primary key, updated_at text, memory_json text)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -235,6 +236,37 @@ func (s *Store) AppliedMemories(ctx context.Context, repoRoot string, limit int)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SaveDomainMemory(ctx context.Context, repoRoot string, memory domain.DomainMemory) error {
+	if memory.GeneratedAt.IsZero() {
+		memory.GeneratedAt = time.Now().UTC()
+	}
+	data, err := json.Marshal(memory)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `insert into domain_memory(repo_root,updated_at,memory_json) values(?,?,?)
+		on conflict(repo_root) do update set updated_at=excluded.updated_at, memory_json=excluded.memory_json`,
+		repoRoot, memory.GeneratedAt.Format(time.RFC3339), string(data))
+	return err
+}
+
+func (s *Store) DomainMemory(ctx context.Context, repoRoot string) (domain.DomainMemory, error) {
+	row := s.db.QueryRowContext(ctx, `select memory_json from domain_memory where repo_root=?`, repoRoot)
+	var data string
+	err := row.Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DomainMemory{}, nil
+	}
+	if err != nil {
+		return domain.DomainMemory{}, err
+	}
+	var memory domain.DomainMemory
+	if err := json.Unmarshal([]byte(data), &memory); err != nil {
+		return domain.DomainMemory{}, err
+	}
+	return memory, nil
 }
 
 func (s *Store) Close() error {

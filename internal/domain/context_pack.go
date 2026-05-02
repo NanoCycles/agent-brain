@@ -24,6 +24,7 @@ type ContextPack struct {
 	MemoryPerformanceRisks         []string         `json:"memory_performance_risks" yaml:"memory_performance_risks"`
 	SuggestedTests                 []string         `json:"suggested_tests" yaml:"suggested_tests"`
 	RecommendedStrategy            []string         `json:"recommended_strategy" yaml:"recommended_strategy"`
+	RelevantSystemMemory           []string         `json:"relevant_system_memory" yaml:"relevant_system_memory"`
 	KnownPitfalls                  []string         `json:"known_pitfalls" yaml:"known_pitfalls"`
 	RecommendedAgentInstructions   []string         `json:"recommended_agent_instructions" yaml:"recommended_agent_instructions"`
 }

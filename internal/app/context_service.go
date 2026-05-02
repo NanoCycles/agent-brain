@@ -61,6 +61,11 @@ func (s *ContextService) generateForTask(ctx context.Context, repoRoot string, t
 		graphNodes, _ = s.graph.ExpandImpact(ctx, repoRoot, task.Topics, 24)
 	}
 	pack := BuildContextPack(ctx, repoRoot, indexedFiles, task, allRules, graphAvailable)
+	if s.meta != nil {
+		if memory, err := s.meta.DomainMemory(ctx, repoRoot); err == nil {
+			pack.RelevantSystemMemory = systemMemoryLines(memory, pack.TaskAnalysis.PrimaryTopicText, 6)
+		}
+	}
 	if pack.ContextQuality.Level != "low" || capabilityExists(pack.TaskAnalysis.MainCapability, pack.RepositoryCapabilities) {
 		pack.LikelyRelevantFiles = mergeGraphImpactCandidates(pack.LikelyRelevantFiles, graphNodes)
 	}
@@ -144,6 +149,7 @@ func RenderMarkdown(p domain.ContextPack) string {
 	writeList(&b, "Memory/Performance", p.Risks.MemoryPerformance)
 	writeList(&b, "Suggested Tests", p.SuggestedTests)
 	writeList(&b, "Recommended Strategy", p.RecommendedStrategy)
+	writeList(&b, "Relevant System Memory", p.RelevantSystemMemory)
 	writeList(&b, "Recommended Agent Instructions", p.RecommendedAgentInstructions)
 	return b.String()
 }
@@ -181,10 +187,28 @@ func RenderMarkdownCavernicola(p domain.ContextPack) string {
 	writeCompactList(&b, p.SuggestedTests, 6)
 	b.WriteString("\n## Strategy\n")
 	writeCompactList(&b, p.RecommendedStrategy, 6)
+	b.WriteString("\n## System Memory\n")
+	writeCompactList(&b, p.RelevantSystemMemory, 6)
 	b.WriteString("\n## Agent Instructions\n")
 	writeCompactList(&b, p.RecommendedAgentInstructions, 4)
 	fmt.Fprintf(&b, "\nNext: %s\n", p.ContextQuality.RecommendedNextAction)
 	return b.String()
+}
+
+func systemMemoryLines(memory domain.DomainMemory, topic string, limit int) []string {
+	text := RenderDomainMemory(memory, topic, "", limit)
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		if line == "" || strings.HasSuffix(line, ":") || strings.HasPrefix(line, "Relevant System Memory") {
+			continue
+		}
+		out = append(out, line)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func writeRuleNames(b *strings.Builder, title string, rs []domain.Rule) {

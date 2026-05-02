@@ -18,5 +18,7 @@ type MetadataStore interface {
 	SaveMemoryProposal(ctx context.Context, taskID, path string) error
 	SaveAppliedMemory(ctx context.Context, memory domain.MemoryRecord) error
 	AppliedMemories(ctx context.Context, repoRoot string, limit int) ([]domain.MemoryRecord, error)
+	SaveDomainMemory(ctx context.Context, repoRoot string, memory domain.DomainMemory) error
+	DomainMemory(ctx context.Context, repoRoot string) (domain.DomainMemory, error)
 	Close() error
 }

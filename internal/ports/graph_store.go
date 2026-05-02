@@ -13,5 +13,6 @@ type GraphStore interface {
 	SearchImpact(ctx context.Context, topic string, limit int) ([]domain.GraphNode, error)
 	ExpandImpact(ctx context.Context, repoRoot string, topics []string, limit int) ([]domain.GraphNode, error)
 	SaveMemory(ctx context.Context, memory domain.MemoryRecord) error
+	SaveDomainMemory(ctx context.Context, repoRoot string, memory domain.DomainMemory) error
 	Close(ctx context.Context) error
 }

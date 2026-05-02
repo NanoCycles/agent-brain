@@ -62,11 +62,22 @@ npm install -g @nanocycles/agent-brain
 agent-brain prepare --task .ai/tasks/TICKET.md
 ```
 
+For Jira-driven work:
+
+```sh
+agent-brain jira import https://your-site.atlassian.net/browse/AK-123
+agent-brain prepare --task .ai/tasks/AK-123.md
+```
+
+Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` to import Jira content through the REST API. Without credentials, `jira import` can create a safe local task shell with `--offline`.
+
 Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized repository gets its own `project_id`, Docker Compose project, Neo4j container, persistent volume, and SQLite database under `.agent-brain/runtime/`, so local projects do not share graph or metadata state. Check the exact HTTP/Bolt ports with `agent-brain status`.
 
 The default context budget is `cavernicola`: minimal tokens, top-ranked files only, compact risks/tests/strategy, and no long prose. Use `--budget standard` or `--budget deep` only when the agent truly needs more context.
 
 ## Flow With Codex/Cursor
+
+Agents should also read `AGENTS.md` in this repository. It is the compact operating contract for coding agents using `agent-brain`.
 
 1. Create a task in `.ai/tasks/TICKET.md`.
 2. Run `agent-brain prepare --task .ai/tasks/TICKET.md`.
@@ -77,6 +88,14 @@ The default context budget is `cavernicola`: minimal tokens, top-ranked files on
 ## MCP Integration
 
 `agent-brain` can run as a local stdio MCP server so coding agents can request compact project context directly instead of spending tokens exploring the whole repository.
+
+For Codex Desktop/CLI on this machine:
+
+```sh
+agent-brain mcp install-codex
+```
+
+This updates `~/.codex/config.toml`, creates a timestamped backup when the file already exists, and points Codex at `agent-brain mcp serve`.
 
 ```json
 {
@@ -106,13 +125,13 @@ On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
 
 Recommended agent flow:
 
-1. Call `prepare_context` with `task_path` or `topic` at the start of a task. Default `budget` is `cavernicola`.
-2. Read the returned handoff and generated context pack.
+1. Call `start_task` with `task_path` or `topic` at the start of a task.
+2. Read the returned handoff, generated context pack, and approved system memory.
 3. Use `impact` for focused follow-up questions.
 4. Use `review_diff` before finalizing changes.
-5. Use `memory_proposal` after a bug or feature is solved; memory is not applied automatically.
+5. Call `finish_task` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
-The MCP server exposes these tools: `prepare_context`, `get_context_pack`, `impact`, `review_diff`, `status`, `memory_proposal`, and `handoff`.
+The MCP server exposes these tools: `start_task`, `finish_task`, `prepare_context`, `get_context_pack`, `impact`, `review_diff`, `status`, `doctor`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
 
 Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
 
@@ -132,17 +151,25 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain prepare --no-index`: generates context from current metadata without indexing.
 - `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
 - `agent-brain mcp serve`: starts the stdio MCP server for AI coding agents.
+- `agent-brain mcp install-codex`: installs the local MCP server into Codex config with a backup.
+- `agent-brain jira import AK-123`: imports a Jira issue into `.ai/tasks/AK-123.md`.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
+- `agent-brain index --repo . --incremental`: skips graph rewrite when indexed file hashes did not change.
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
 - `agent-brain impact --topic "text"`: searches graph impact.
 - `agent-brain review-plan --plan path/to/plan.md`: reviews an agent plan.
 - `agent-brain review-diff`: reviews the current git diff without modifying files.
 - `agent-brain memory-proposal --task .ai/tasks/TICKET.md`: writes a structured memory proposal.
 - `agent-brain memory-apply <proposal.yml>`: validates and applies memory after confirmation.
+- `agent-brain memory-domain propose --task .ai/tasks/TICKET.md --area graphql`: proposes system/business memory by area.
+- `agent-brain memory-domain apply .ai/memory-proposals/TICKET.domain.yml --yes`: applies approved domain memory to file, SQLite, and Neo4j.
+- `agent-brain memory-domain list --area graphql --topic "nested count"`: prints compact approved system memory.
 
 ## Memory Model
 
-Memory is local and explicit. A proposal is first written to `.ai/memory-proposals/` and is not trusted until `memory-apply` is confirmed. Applied memory is stored in SQLite as the local audit/source-of-truth record and mirrored into Neo4j as `Task`, `Memory`, `Rule`, and `Risk` nodes so future impact/context queries can use it. Source code remains the source of truth for implementation details.
+Memory is local and explicit. A proposal is first written to `.ai/memory-proposals/` and is not trusted until it is confirmed. Implementation memory captures what changed for a task. Domain memory captures how the system works: concepts, components, business rules, and invariants, grouped by areas such as `graphql`, `auth`, `billing`, `events`, and `persistence`.
+
+Applied memory is stored in SQLite as the local audit/source-of-truth record and mirrored into Neo4j as technical/business graph nodes so future impact/context queries can use it. Source code remains the source of truth for implementation details.
 
 ## Security
 

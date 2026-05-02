@@ -24,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -327,12 +327,68 @@ func mcpCmd(ctx context.Context) *cobra.Command {
 			return mcp.NewServer(os.Stdin, os.Stdout).Serve(ctx)
 		},
 	}
-	root.AddCommand(serve)
+	installCodex := &cobra.Command{
+		Use:   "install-codex",
+		Short: "Install agent-brain MCP server into Codex config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.InstallCodexMCP()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Codex MCP configured: %s\nCommand: %s\nChanged: %s\n", result.ConfigPath, result.Command, yesNo(result.Changed))
+			if result.BackupPath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Backup: %s\n", result.BackupPath)
+			}
+			return nil
+		},
+	}
+	root.AddCommand(serve, installCodex)
+	return root
+}
+
+func jiraCmd(ctx context.Context) *cobra.Command {
+	root := &cobra.Command{Use: "jira", Short: "Import Jira issues into local agent task files"}
+	var baseURL, email, token, out string
+	var offline bool
+	importCmd := &cobra.Command{
+		Use:   "import <ISSUE-KEY-or-URL>",
+		Short: "Import a Jira issue into .ai/tasks/<KEY>.md",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				out = filepath.Join(p.Root, ".ai", "tasks")
+			}
+			result, err := app.ImportJiraIssue(ctx, app.JiraImportOptions{
+				KeyOrURL:  args[0],
+				BaseURL:   baseURL,
+				Email:     email,
+				Token:     token,
+				OutputDir: out,
+				Offline:   offline,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Jira task imported: %s\nTask ID: %s\nOffline shell: %s\n", result.Path, result.TaskID, yesNo(result.Offline))
+			return nil
+		},
+	}
+	importCmd.Flags().StringVar(&baseURL, "base-url", "", "Jira base URL, or JIRA_BASE_URL")
+	importCmd.Flags().StringVar(&email, "email", "", "Jira account email, or JIRA_EMAIL")
+	importCmd.Flags().StringVar(&token, "token", "", "Jira API token, or JIRA_API_TOKEN")
+	importCmd.Flags().StringVar(&out, "out", "", "task output directory")
+	importCmd.Flags().BoolVar(&offline, "offline", false, "create a local task shell without calling Jira")
+	root.AddCommand(importCmd)
 	return root
 }
 
 func indexCmd(ctx context.Context) *cobra.Command {
 	var repo string
+	var incremental bool
 	c := &cobra.Command{
 		Use:   "index",
 		Short: "Index a Go repository",
@@ -354,15 +410,23 @@ func indexCmd(ctx context.Context) *cobra.Command {
 			if graph != nil {
 				defer graph.Close(ctx)
 			}
-			idx, err := app.NewIndexService(golang.Indexer{}, store, graph).Index(ctx, repoAbs)
+			result, err := app.NewIndexService(golang.Indexer{}, store, graph).IndexWithOptions(ctx, repoAbs, app.IndexOptions{Incremental: incremental})
 			if err != nil {
 				return err
 			}
+			idx := result.Index
 			fmt.Fprintf(cmd.OutOrStdout(), "Indexed %d files, %d nodes, %d relationships\n", len(idx.Files), len(idx.Nodes), len(idx.Relations))
+			if incremental {
+				fmt.Fprintf(cmd.OutOrStdout(), "Incremental: changed files=%d graph updated=%s\n", len(result.ChangedFiles), yesNo(result.GraphUpdated))
+				if result.Unchanged {
+					fmt.Fprintln(cmd.OutOrStdout(), "No file hash changes detected; graph write skipped.")
+				}
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&repo, "repo", ".", "repository path")
+	c.Flags().BoolVar(&incremental, "incremental", false, "skip graph rewrite when indexed file hashes did not change")
 	return c
 }
 
@@ -550,6 +614,96 @@ func memoryApplyCmd(ctx context.Context) *cobra.Command {
 	}
 	c.Flags().BoolVar(&yes, "yes", false, "confirm applying memory proposal")
 	return c
+}
+
+func domainMemoryCmd(ctx context.Context) *cobra.Command {
+	root := &cobra.Command{Use: "memory-domain", Short: "Propose, apply, and inspect system/domain memory"}
+	var task, area string
+	propose := &cobra.Command{
+		Use:   "propose",
+		Short: "Propose domain memory from indexed code and an optional task",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			_ = store.Init(ctx)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			path, memory, err := app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, task, p.AIMemoryProposals, area)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain memory proposal: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d\n", path, len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants))
+			return nil
+		},
+	}
+	propose.Flags().StringVar(&task, "task", "", "task markdown path")
+	propose.Flags().StringVar(&area, "area", "all", "memory area: all, graphql, auth, billing, events, persistence")
+	var yes bool
+	apply := &cobra.Command{
+		Use:   "apply <proposal.yml>",
+		Short: "Apply approved domain memory to local file, SQLite, and Neo4j",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				fmt.Fprint(cmd.OutOrStdout(), "Apply domain memory? Type 'yes' to continue: ")
+				var answer string
+				fmt.Fscan(os.Stdin, &answer)
+				yes = strings.EqualFold(answer, "yes")
+			}
+			p, _ := paths.Discover(".")
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			_ = store.Init(ctx)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			memory, err := app.NewDomainMemoryService(store, graph).Apply(ctx, p.Root, args[0], domainMemoryPath(p), yes)
+			if err != nil {
+				return fmt.Errorf("confirmation required or invalid proposal; rerun with --yes after reviewing %s", args[0])
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain memory applied: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d\n", domainMemoryPath(p), len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants))
+			return nil
+		},
+	}
+	apply.Flags().BoolVar(&yes, "yes", false, "confirm applying domain memory")
+	var topic, listArea string
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "Print compact relevant system/domain memory",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			_ = store.Init(ctx)
+			memory, err := app.NewDomainMemoryService(store, nil).Load(ctx, p.Root, domainMemoryPath(p))
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), app.RenderDomainMemory(memory, topic, listArea, 12))
+			return nil
+		},
+	}
+	list.Flags().StringVar(&topic, "topic", "", "filter memory by topic")
+	list.Flags().StringVar(&listArea, "area", "all", "filter memory by area")
+	root.AddCommand(propose, apply, list)
+	return root
+}
+
+func domainMemoryPath(p paths.ProjectPaths) string {
+	return filepath.Join(p.AgentBrainDir, "memory", "domain.yml")
 }
 
 func graphOrNil(configPath string) *neo.Store {

@@ -194,6 +194,62 @@ func (s *Store) SaveMemory(ctx context.Context, memory domain.MemoryRecord) erro
 	return err
 }
 
+func (s *Store) SaveDomainMemory(ctx context.Context, repoRoot string, memory domain.DomainMemory) error {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		params := map[string]any{"repo": repoRoot, "indexed_at": memory.GeneratedAt}
+		if _, err := tx.Run(ctx, `match (n {repo:$repo, source:'agent-brain-domain-memory'}) detach delete n`, params); err != nil {
+			return nil, err
+		}
+		for _, c := range memory.DomainConcepts {
+			if _, err := tx.Run(ctx, `
+				merge (n:DomainConcept {repo:$repo, name:$name})
+				set n.path=$path, n.area=$area, n.source='agent-brain-domain-memory', n.confidence=$confidence, n.description=$description, n.evidence=$evidence, n.indexed_at=$indexed_at`,
+				map[string]any{"repo": repoRoot, "name": c.Name, "area": c.Area, "path": "domain://" + c.Name, "confidence": c.Confidence, "description": c.Description, "evidence": strings.Join(c.Evidence, "\n"), "indexed_at": memory.GeneratedAt}); err != nil {
+				return nil, err
+			}
+		}
+		for _, c := range memory.SystemComponents {
+			if _, err := tx.Run(ctx, `
+				merge (n:SystemComponent {repo:$repo, name:$name})
+				set n.path=$path, n.area=$area, n.source='agent-brain-domain-memory', n.confidence=$confidence, n.kind=$kind, n.description=$responsibility, n.evidence=$evidence, n.indexed_at=$indexed_at`,
+				map[string]any{"repo": repoRoot, "name": c.Name, "area": c.Area, "path": "component://" + c.Name, "confidence": c.Confidence, "kind": c.Kind, "responsibility": c.Responsibility, "evidence": strings.Join(c.Files, "\n"), "indexed_at": memory.GeneratedAt}); err != nil {
+				return nil, err
+			}
+			for _, file := range c.Files {
+				if _, err := tx.Run(ctx, `
+					match (component:SystemComponent {repo:$repo, name:$name})
+					optional match (file:File {repo:$repo, path:$file})
+					with component, file
+					where file is not null
+					merge (file)-[:DEFINES]->(component)`,
+					map[string]any{"repo": repoRoot, "name": c.Name, "file": file}); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, r := range memory.BusinessRules {
+			if _, err := tx.Run(ctx, `
+				merge (n:BusinessRule {repo:$repo, name:$name})
+				set n.path=$path, n.area=$area, n.source='agent-brain-domain-memory', n.confidence=$confidence, n.description=$statement, n.evidence=$evidence, n.indexed_at=$indexed_at`,
+				map[string]any{"repo": repoRoot, "name": r.Name, "area": r.Area, "path": "rule://" + r.Name, "confidence": r.Confidence, "statement": r.Statement, "evidence": strings.Join(r.Evidence, "\n"), "indexed_at": memory.GeneratedAt}); err != nil {
+				return nil, err
+			}
+		}
+		for _, inv := range memory.Invariants {
+			if _, err := tx.Run(ctx, `
+				merge (n:Invariant {repo:$repo, name:$name})
+				set n.path=$path, n.area=$area, n.source='agent-brain-domain-memory', n.confidence=$confidence, n.description=$statement, n.evidence=$evidence, n.indexed_at=$indexed_at`,
+				map[string]any{"repo": repoRoot, "name": inv.Name, "area": inv.Area, "path": "invariant://" + inv.Name, "confidence": inv.Confidence, "statement": inv.Statement, "evidence": strings.Join(inv.Evidence, "\n"), "indexed_at": memory.GeneratedAt}); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
 func (s *Store) Close(ctx context.Context) error {
 	return s.driver.Close(ctx)
 }

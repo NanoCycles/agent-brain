@@ -5,6 +5,38 @@ rules:
     severity: medium
     topics: [graphql]
   - id: graphql.no_n_plus_one
-    title: Avoid N+1 queries.
+    title: List-returning GraphQL relations must use DataLoader or batched fetchers; resolver-per-row queries are blocked.
+    severity: critical
+    topics: [graphql, performance, n+1, dataloader, batch]
+  - id: graphql.depth_complexity_limits
+    title: Public GraphQL endpoints must enforce query depth or complexity limits.
+    severity: critical
+    topics: [graphql, dos, complexity, depth]
+  - id: graphql.resolver_authorization
+    title: Resolvers returning non-public data must enforce authorization and tenant/project isolation.
+    severity: critical
+    topics: [graphql, auth, authorization, tenant, project]
+  - id: graphql.websocket_auth
+    title: GraphQL WebSocket connection_init must validate auth before accepting operations.
+    severity: critical
+    topics: [graphql, websocket, auth, subscription]
+  - id: graphql.subscription_tenant_revalidation
+    title: Subscription messages must re-validate tenant/auth context.
+    severity: critical
+    topics: [graphql, subscription, tenant, auth]
+  - id: graphql.dataloader_context
+    title: DataLoaders must propagate context and respect cancellation/timeouts.
     severity: high
-    topics: [graphql, performance]
+    topics: [graphql, dataloader, context, timeout]
+  - id: graphql.subscription_panic_recovery
+    title: Subscription handlers must recover from panics and avoid killing the connection loop.
+    severity: high
+    topics: [graphql, subscription, panic]
+  - id: graphql.subscription_rate_limit
+    title: Subscriptions must have per-connection rate limits or backpressure.
+    severity: high
+    topics: [graphql, subscription, rate, limit]
+  - id: graphql.generated_code
+    title: Schema changes must regenerate gqlgen/generated code and update tests.
+    severity: high
+    topics: [graphql, schema, generated, gqlgen]

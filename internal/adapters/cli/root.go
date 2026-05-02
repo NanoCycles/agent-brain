@@ -24,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -533,6 +533,27 @@ func reviewPlanCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&plan, "plan", "", "plan markdown path")
+	return c
+}
+
+func reviewCommentsCmd() *cobra.Command {
+	var file string
+	c := &cobra.Command{
+		Use:   "review-comments",
+		Short: "Turn code review comments into an agent repair plan",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if file == "" {
+				return fmt.Errorf("--file is required")
+			}
+			_, summary, err := app.NewReviewService().ReviewComments(file)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), summary)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&file, "file", "", "markdown/text file containing review comments")
 	return c
 }
 

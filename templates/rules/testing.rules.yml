@@ -4,3 +4,23 @@ rules:
     title: Every functional change requires unit tests.
     severity: medium
     topics: [testing]
+  - id: testing.bug_regression
+    title: Every bug requires regression test.
+    severity: high
+    topics: [testing, bug]
+  - id: testing.integration_transport
+    title: Integration tests required for persistence/transport behavior.
+    severity: medium
+    topics: [testing, persistence, transport]
+  - id: testing.race_detector
+    title: Race detector required for concurrency changes.
+    severity: medium
+    topics: [testing, concurrency]
+  - id: testing.security_critical_paths
+    title: Security-sensitive code requires negative and boundary tests.
+    severity: high
+    topics: [testing, security, auth, authorization]
+  - id: testing.idempotency_retry
+    title: Retry/idempotency logic requires duplicate, failure, and concurrency tests.
+    severity: high
+    topics: [testing, events, idempotency, retry]

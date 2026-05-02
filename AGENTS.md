@@ -15,6 +15,17 @@ This repository is designed for AI coding agents first. Keep token usage low and
 9. After validation, call `finish_task` to generate implementation and domain memory proposals.
 10. Do not apply memory automatically. Ask for human approval before `apply_domain_memory` or memory apply commands.
 
+## Review Comment Repair Flow
+
+When external review comments exist, save them to a local markdown/text file and call `review_comments` before editing. Fix in this order:
+
+1. `critical` / block comments.
+2. `high` / changes requested comments.
+3. contract, authorization, tenant isolation, data integrity, N+1, and missing test issues.
+4. advisory nits only after gated issues are clean.
+
+After each repair pass, run focused tests and `review_diff`. If comments mention public schema/proto/routes, ask for human approval before changing contracts.
+
 ## Safety Rules
 
 - Do not commit, push, merge, reset, or run destructive git commands unless the human explicitly asks.

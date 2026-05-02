@@ -58,11 +58,31 @@ func (s *ReviewService) ReviewPlan(planPath, rulesDir string) (ReviewReport, err
 	if analysis.MainCapability == "graphql" && hasTopic(analysis, "nested count") && !strings.Contains(plan, "n+1") && !strings.Contains(plan, "batch") {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "GraphQL count performance risk missing", Message: "Plan should address N+1 count queries or batching for nested counts."})
 	}
+	if analysis.MainCapability == "graphql" {
+		if mentionsGraphQLRelations(plan) && !strings.Contains(plan, "dataloader") && !strings.Contains(plan, "batch") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "GraphQL relation batching missing", Message: "Plans touching GraphQL relations must explicitly use DataLoader/batched fetchers and avoid resolver-per-row queries."})
+		}
+		if strings.Contains(plan, "subscription") && (!strings.Contains(plan, "auth") || !strings.Contains(plan, "tenant")) {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "Subscription auth/tenant validation missing", Message: "GraphQL subscription plans must re-validate auth and tenant/project context."})
+		}
+		if strings.Contains(plan, "websocket") && !strings.Contains(plan, "connection_init") && !strings.Contains(plan, "handshake") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "WebSocket auth handshake missing", Message: "GraphQL WebSocket plans must validate connection_init/handshake before accepting operations."})
+		}
+		if (strings.Contains(plan, "query") || strings.Contains(plan, "resolver")) && !strings.Contains(plan, "complexity") && !strings.Contains(plan, "depth") {
+			findings = append(findings, domain.Finding{Severity: "high", Title: "GraphQL DoS controls not addressed", Message: "Plans touching public GraphQL queries/resolvers should state whether depth/complexity limits remain enforced."})
+		}
+	}
 	if analysis.MainCapability == "events" && !strings.Contains(plan, "idempot") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Event idempotency missing", Message: "Event plans must mention idempotency and duplicate delivery handling."})
 	}
 	if (analysis.Type == domain.TaskTypeSecurity || containsString(analysis.Capabilities, "authorization")) && !strings.Contains(plan, "tenant") && !strings.Contains(plan, "project") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Tenant/project isolation missing", Message: "Security plans must verify tenant/project isolation."})
+	}
+	if touchesCacheTopic(plan) && !strings.Contains(plan, "tenant") && !strings.Contains(plan, "project") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Cache tenant scope missing", Message: "Cache changes for tenant/project data must include tenant/project scope in cache keys."})
+	}
+	if touchesAuditTopic(plan) && !strings.Contains(plan, "transaction") && !strings.Contains(plan, "atomic") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Audit transactional consistency missing", Message: "Audit trail changes must address transactional consistency with the data write."})
 	}
 	decision := domain.Approved
 	if len(findings) > 0 {
@@ -90,6 +110,7 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "Forbidden file modified", Message: "Diff includes a path that agent-brain treats as secret or unsafe.", Path: path})
 		}
 		findings = append(findings, contractDiffFindings(repoRoot, path)...)
+		findings = append(findings, enterpriseDiffFindings(repoRoot, path)...)
 	}
 	hasTests := false
 	for _, f := range files {
@@ -109,6 +130,40 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		decision = domain.ChangesRequested
 	}
 	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings), nil
+}
+
+func enterpriseDiffFindings(repoRoot, path string) []domain.Finding {
+	p := filepath.ToSlash(strings.ToLower(path))
+	data, err := os.ReadFile(filepath.Join(repoRoot, path))
+	if err != nil {
+		return nil
+	}
+	text := strings.ToLower(string(data))
+	var findings []domain.Finding
+	if strings.HasSuffix(p, ".go") && (strings.Contains(text, "fmt.println(") || strings.Contains(text, "println(")) {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Debug print in production path", Message: "Review protocol blocks fmt.Println/println debug output in production code paths. Use structured logging if needed.", Path: path})
+	}
+	if strings.Contains(p, "graphql") {
+		if mentionsGraphQLRelations(text) && !strings.Contains(text, "dataloader") && !strings.Contains(text, "batch") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "GraphQL relation batching not evident", Message: "GraphQL relation code appears to lack DataLoader/batched fetching evidence; external review may block N+1 risk.", Path: path})
+		}
+		if strings.Contains(text, "subscription") && strings.Contains(text, "tenant") && !strings.Contains(text, "auth") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "Subscription tenant/auth revalidation unclear", Message: "Subscription code references tenant behavior without visible auth revalidation.", Path: path})
+		}
+		if strings.Contains(text, "websocket") && !strings.Contains(text, "connection_init") && !strings.Contains(text, "auth") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "WebSocket auth handshake unclear", Message: "GraphQL WebSocket code should validate connection_init/auth before operations.", Path: path})
+		}
+	}
+	if touchesCachePathOrText(p, text) && (strings.Contains(text, "tenant") || strings.Contains(text, "project")) && !cacheKeyLooksScoped(text) {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Cache key tenant scope unclear", Message: "Cache changes for tenant/project data should make tenant/project scope visible in the cache key.", Path: path})
+	}
+	if touchesAuditPathOrText(p, text) && !strings.Contains(text, "transaction") && !strings.Contains(text, "tx.") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Audit transactional consistency unclear", Message: "Audit changes should show how audit writes stay consistent with the data write.", Path: path})
+	}
+	if strings.Contains(text, "context.todo()") || strings.Contains(text, "context.background()") {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "Context propagation risk", Message: "Production paths should propagate request context instead of creating background/TODO contexts.", Path: path})
+	}
+	return findings
 }
 
 func contractDiffFindings(repoRoot, path string) []domain.Finding {
@@ -132,6 +187,31 @@ func contractDiffFindings(repoRoot, path string) []domain.Finding {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "Event contract area modified", Message: "Diff appears to touch event consumer/producer types. Verify idempotency, duplicate delivery, and payload safety.", Path: path})
 	}
 	return findings
+}
+
+func mentionsGraphQLRelations(text string) bool {
+	return strings.Contains(text, "relation") || strings.Contains(text, "relationship") || strings.Contains(text, "resolver") || strings.Contains(text, "nested")
+}
+
+func touchesCacheTopic(text string) bool {
+	return strings.Contains(text, "cache") || strings.Contains(text, "redis")
+}
+
+func touchesAuditTopic(text string) bool {
+	return strings.Contains(text, "audit")
+}
+
+func touchesCachePathOrText(path, text string) bool {
+	return strings.Contains(path, "cache") || strings.Contains(path, "redis") || strings.Contains(text, "cache")
+}
+
+func touchesAuditPathOrText(path, text string) bool {
+	return strings.Contains(path, "audit") || strings.Contains(text, "audit")
+}
+
+func cacheKeyLooksScoped(text string) bool {
+	return (strings.Contains(text, "tenant") || strings.Contains(text, "project")) &&
+		(strings.Contains(text, "key") || strings.Contains(text, "cachekey") || strings.Contains(text, "cache key"))
 }
 
 func looksLikeEventContractPath(path string) bool {

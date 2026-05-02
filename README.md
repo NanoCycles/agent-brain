@@ -158,6 +158,7 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
 - `agent-brain impact --topic "text"`: searches graph impact.
 - `agent-brain review-plan --plan path/to/plan.md`: reviews an agent plan.
+- `agent-brain review-comments --file review-comments.md`: turns external review comments into a prioritized agent repair plan.
 - `agent-brain review-diff`: reviews the current git diff without modifying files.
 - `agent-brain memory-proposal --task .ai/tasks/TICKET.md`: writes a structured memory proposal.
 - `agent-brain memory-apply <proposal.yml>`: validates and applies memory after confirmation.

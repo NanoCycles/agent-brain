@@ -162,6 +162,9 @@ func toolDefinitions() []map[string]any {
 			"budget": map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
 		}),
 		tool("review_diff", "Review current git diff for risks, contracts, tests, forbidden files, and rule violations. Read-only.", map[string]any{}),
+		tool("review_comments", "Turn external code review comments into a prioritized agent repair plan. Read-only.", map[string]any{
+			"comments_path": map[string]any{"type": "string", "description": "Markdown/text file with review comments"},
+		}),
 		tool("status", "Return project runtime, graph, SQLite, and capability status.", map[string]any{}),
 		tool("doctor", "Diagnose local prerequisites and project wiring for agent-brain.", map[string]any{}),
 		tool("memory_proposal", "Generate a structured memory proposal after a task is implemented. Does not apply memory automatically.", map[string]any{
@@ -219,6 +222,13 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 			return "", err
 		}
 		return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
+	case "review_comments":
+		path := stringArg(args, "comments_path")
+		if path == "" {
+			return "", fmt.Errorf("comments_path is required")
+		}
+		_, summary, err := app.NewReviewService().ReviewComments(path)
+		return summary, err
 	case "status":
 		return status(ctx, p)
 	case "doctor":

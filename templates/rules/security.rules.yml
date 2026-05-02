@@ -4,3 +4,31 @@ rules:
     title: No secrets indexing.
     severity: critical
     topics: [security, secret]
+  - id: security.no_credential_exposure
+    title: No credential exposure.
+    severity: critical
+    topics: [security, credential]
+  - id: security.auth_approval
+    title: Auth/authz changes require approval.
+    severity: high
+    topics: [security, auth]
+  - id: security.tenant_isolation
+    title: Tenant/project isolation must be preserved.
+    severity: high
+    topics: [security, tenant, project]
+  - id: security.boundary_validation
+    title: HTTP/GraphQL/queue/RPC boundaries must validate input.
+    severity: critical
+    topics: [security, validation, boundary]
+  - id: security.no_sensitive_logging
+    title: Do not log PII, secrets, tokens, or full request/response bodies.
+    severity: critical
+    topics: [security, logging, pii, secret]
+  - id: security.no_injection
+    title: Prevent SQL/NoSQL/command/path injection at all external boundaries.
+    severity: critical
+    topics: [security, injection, sql, nosql, command, path]
+  - id: security.cache_tenant_scope
+    title: Cache keys for tenant/project data must include tenant/project scope.
+    severity: high
+    topics: [security, cache, tenant, project]

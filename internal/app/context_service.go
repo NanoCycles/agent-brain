@@ -50,10 +50,16 @@ func (s *ContextService) generateForTask(ctx context.Context, repoRoot string, t
 		indexedFiles, _ = s.meta.IndexedFiles(ctx, repoRoot)
 	}
 	graphAvailable := false
+	var graphNodes []domain.GraphNode
 	if s.graph != nil && s.graph.Ping(ctx) == nil {
 		graphAvailable = true
+		graphNodes, _ = s.graph.ExpandImpact(ctx, repoRoot, task.Topics, 24)
 	}
 	pack := BuildContextPack(ctx, repoRoot, indexedFiles, task, allRules, graphAvailable)
+	if pack.ContextQuality.Level != "low" || capabilityExists(pack.TaskAnalysis.MainCapability, pack.RepositoryCapabilities) {
+		pack.LikelyRelevantFiles = mergeGraphImpactCandidates(pack.LikelyRelevantFiles, graphNodes)
+	}
+	pack.AgentBudget.OpenTopFilesFirst = min(3, len(pack.LikelyRelevantFiles))
 	if !writeFiles {
 		return pack, "", "", nil
 	}
@@ -228,4 +234,53 @@ func summarize(s string) string {
 		return s[:500] + "..."
 	}
 	return s
+}
+
+func mergeGraphImpactCandidates(existing []domain.FileCandidate, nodes []domain.GraphNode) []domain.FileCandidate {
+	seen := map[string]struct{}{}
+	for _, c := range existing {
+		seen[c.Path] = struct{}{}
+	}
+	out := append([]domain.FileCandidate{}, existing...)
+	for _, n := range nodes {
+		path := graphNodeFilePath(n)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		category := "supporting_infrastructure"
+		if n.Label == "File" || n.Label == "GraphQLField" || n.Label == "RESTEndpoint" || n.Label == "GRPCMethod" || n.Label == "EventType" {
+			category = "primary_candidate"
+		}
+		if n.Label == "Test" {
+			category = "related_test"
+		}
+		out = append(out, domain.FileCandidate{
+			Path:       path,
+			Reason:     "Neo4j impact expansion from contract/code graph.",
+			Confidence: 0.75,
+			Score:      125,
+			Source:     "neo4j",
+			Category:   category,
+			Evidence:   []string{"graph node " + n.Label + " matched or is near a matched contract/code node"},
+		})
+		seen[path] = struct{}{}
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func graphNodeFilePath(n domain.GraphNode) string {
+	path := n.Path
+	if idx := strings.Index(path, "#"); idx > 0 {
+		return path[:idx]
+	}
+	if n.Label == "File" {
+		return path
+	}
+	return ""
 }

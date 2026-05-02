@@ -63,6 +63,17 @@ func (Runtime) Down(ctx context.Context, spec ports.RuntimeSpec) error {
 	return nil
 }
 
+func (Runtime) Destroy(ctx context.Context, spec ports.RuntimeSpec) error {
+	if _, err := os.Stat(spec.ComposePath); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", spec.Namespace, "-f", spec.ComposePath, "down", "-v", "--remove-orphans")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker compose destroy failed: %w: %s", err, string(out))
+	}
+	return nil
+}
+
 func (r Runtime) Status(ctx context.Context, spec ports.RuntimeSpec) ports.RuntimeStatus {
 	return ports.RuntimeStatus{DockerAvailable: r.DockerAvailable(ctx), Neo4jRunning: r.Neo4jRunning(ctx, spec)}
 }

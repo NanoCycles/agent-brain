@@ -3,6 +3,7 @@ package neo4j
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/NanoCycles/agent-brain/internal/domain"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -90,6 +91,43 @@ func (s *Store) SearchImpact(ctx context.Context, topic string, limit int) ([]do
 	res, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		rows, err := tx.Run(ctx, `match (n) where toLower(coalesce(n.name,'') + ' ' + coalesce(n.path,'') + ' ' + coalesce(n.layer,'')) contains toLower($topic) return labels(n)[0], n.name, n.path, n.repo, n.package, n.layer limit $limit`,
 			map[string]any{"topic": topic, "limit": limit})
+		if err != nil {
+			return nil, err
+		}
+		var out []domain.GraphNode
+		for rows.Next(ctx) {
+			rec := rows.Record()
+			out = append(out, domain.GraphNode{
+				Label:   rec.Values[0].(string),
+				Name:    stringValue(rec.Values[1]),
+				Path:    stringValue(rec.Values[2]),
+				Repo:    stringValue(rec.Values[3]),
+				Package: stringValue(rec.Values[4]),
+				Layer:   stringValue(rec.Values[5]),
+			})
+		}
+		return out, rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.([]domain.GraphNode), nil
+}
+
+func (s *Store) ExpandImpact(ctx context.Context, repoRoot string, topics []string, limit int) ([]domain.GraphNode, error) {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	query := strings.Join(topics, " ")
+	res, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		rows, err := tx.Run(ctx, `
+			match (seed {repo:$repo})
+			where any(t in $topics where toLower(coalesce(seed.name,'') + ' ' + coalesce(seed.path,'') + ' ' + coalesce(seed.layer,'') + ' ' + coalesce(seed.evidence,'')) contains toLower(t))
+			optional match p=(seed)-[*1..2]-(n)
+			where n.repo=$repo and any(label in labels(n) where label in ['File','Function','Method','Test','RESTEndpoint','GraphQLField','GRPCMethod','EventType','Contract'])
+			with distinct coalesce(n, seed) as node
+			return labels(node)[0], node.name, node.path, node.repo, node.package, node.layer
+			limit $limit`,
+			map[string]any{"repo": repoRoot, "topics": topics, "q": query, "limit": limit})
 		if err != nil {
 			return nil, err
 		}

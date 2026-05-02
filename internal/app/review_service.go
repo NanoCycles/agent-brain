@@ -89,6 +89,7 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		if filesystem.IsForbiddenPath(path) {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "Forbidden file modified", Message: "Diff includes a path that agent-brain treats as secret or unsafe.", Path: path})
 		}
+		findings = append(findings, contractDiffFindings(repoRoot, path)...)
 	}
 	hasTests := false
 	for _, f := range files {
@@ -108,6 +109,29 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		decision = domain.ChangesRequested
 	}
 	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings), nil
+}
+
+func contractDiffFindings(repoRoot, path string) []domain.Finding {
+	p := filepath.ToSlash(strings.ToLower(path))
+	var findings []domain.Finding
+	switch {
+	case strings.HasSuffix(p, ".graphql"), strings.HasSuffix(p, ".graphqls"), strings.Contains(p, "schema.graphql"):
+		findings = append(findings, domain.Finding{Severity: "high", Title: "GraphQL contract modified", Message: "Diff touches GraphQL schema/contract. Confirm human approval and update contract/regression tests.", Path: path})
+	case strings.HasSuffix(p, ".proto"):
+		findings = append(findings, domain.Finding{Severity: "high", Title: "gRPC/protobuf contract modified", Message: "Diff touches protobuf contract. Confirm human approval and update generated code/tests.", Path: path})
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, path))
+	if err != nil {
+		return findings
+	}
+	text := strings.ToLower(string(data))
+	if strings.Contains(text, "handlefunc(") || strings.Contains(text, ".get(") || strings.Contains(text, ".post(") || strings.Contains(text, ".put(") || strings.Contains(text, ".patch(") || strings.Contains(text, ".delete(") {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "REST route registration modified", Message: "Diff appears to touch REST route registration. Verify public route contract and integration tests.", Path: path})
+	}
+	if strings.Contains(text, "type ") && (strings.Contains(text, "event") || strings.Contains(text, "consumer") || strings.Contains(text, "producer")) {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "Event contract area modified", Message: "Diff appears to touch event consumer/producer types. Verify idempotency, duplicate delivery, and payload safety.", Path: path})
+	}
+	return findings
 }
 
 func renderDiffSummary(files []string, findings []domain.Finding) string {

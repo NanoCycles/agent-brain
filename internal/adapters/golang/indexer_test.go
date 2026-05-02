@@ -141,3 +141,108 @@ func Register() {
 		t.Fatalf("expected REST endpoint contract: %#v", idx.Files)
 	}
 }
+
+func TestIndexerInfersCallsAndInterfaceImplementations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "internal", "domain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package domain
+type Saver interface { Save() error }
+type Repo struct{}
+func (Repo) Save() error { return nil }
+func Use() error { return Repo{}.Save() }
+`
+	if err := os.WriteFile(filepath.Join(dir, "repo.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasCall, hasImpl bool
+	for _, rel := range idx.Relations {
+		if rel.Type == "CALLS" {
+			hasCall = true
+		}
+		if rel.Type == "IMPLEMENTS" {
+			hasImpl = true
+		}
+	}
+	if !hasCall || !hasImpl {
+		t.Fatalf("expected CALLS and IMPLEMENTS relationships, got %#v", idx.Relations)
+	}
+}
+
+func TestIndexerTypedCallResolutionDisambiguatesReceiver(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "internal", "domain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package domain
+type Repo struct{}
+type Cache struct{}
+func (Repo) Save() error { return nil }
+func (Cache) Save() error { return nil }
+func Use(r Repo) error { return r.Save() }
+`
+	if err := os.WriteFile(filepath.Join(dir, "repo.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repoCall, cacheCall bool
+	for _, rel := range idx.Relations {
+		if rel.Type == "CALLS" && rel.FromKey == "internal/domain/repo.go#Use" && rel.ToKey == "internal/domain/repo.go#Repo.Save" {
+			repoCall = true
+		}
+		if rel.Type == "CALLS" && rel.FromKey == "internal/domain/repo.go#Use" && rel.ToKey == "internal/domain/repo.go#Cache.Save" {
+			cacheCall = true
+		}
+	}
+	if !repoCall || cacheCall {
+		t.Fatalf("expected typed call to Repo.Save only, repoCall=%v cacheCall=%v rels=%#v", repoCall, cacheCall, idx.Relations)
+	}
+}
+
+func TestIndexerTypedImplementationWithPointerReceiver(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "internal", "domain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package domain
+type Saver interface { Save() error }
+type Repo struct{}
+func (*Repo) Save() error { return nil }
+`
+	if err := os.WriteFile(filepath.Join(dir, "repo.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Indexer{}.Index(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasImpl bool
+	for _, rel := range idx.Relations {
+		if rel.Type == "IMPLEMENTS" && rel.FromKey == "internal/domain/repo.go#Repo" && rel.ToKey == "internal/domain/repo.go#Saver" {
+			hasImpl = true
+		}
+	}
+	if !hasImpl {
+		t.Fatalf("expected pointer receiver implementation, got %#v", idx.Relations)
+	}
+}

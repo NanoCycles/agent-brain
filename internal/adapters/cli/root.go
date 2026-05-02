@@ -22,7 +22,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), statusCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
 	return root
 }
 
@@ -88,6 +88,42 @@ func downCmd(ctx context.Context) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func destroyCmd(ctx context.Context) *cobra.Command {
+	var confirm bool
+	c := &cobra.Command{
+		Use:   "destroy --confirm",
+		Short: "Destroy local agent-brain runtime data for this project without touching source code",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !confirm {
+				return fmt.Errorf("destroy requires --confirm; this removes this project's Neo4j volume and SQLite metadata, but does not touch source code")
+			}
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
+				return err
+			}
+			spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+			if (filesystem.LocalFS{}).Exists(p.ComposePath) {
+				if err := app.NewRuntimeService(dockerruntime.Runtime{}, nil).Destroy(ctx, spec); err != nil {
+					return err
+				}
+			}
+			for _, path := range []string{p.SQLitePath, p.SQLitePath + "-shm", p.SQLitePath + "-wal"} {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Destroyed local runtime data for project %s. Source code, config, rules, context, and memory proposals were not removed.\n", cfg.ProjectID)
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm removal of this project's local runtime data")
+	return c
 }
 
 func statusCmd(ctx context.Context) *cobra.Command {

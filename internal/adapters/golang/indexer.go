@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,9 +17,21 @@ import (
 
 	"github.com/NanoCycles/agent-brain/internal/adapters/filesystem"
 	"github.com/NanoCycles/agent-brain/internal/domain"
+	"golang.org/x/tools/go/packages"
 )
 
 type Indexer struct{}
+
+type graphTarget struct {
+	label string
+	key   string
+}
+
+type typedTarget struct {
+	label string
+	key   string
+	obj   types.Object
+}
 
 func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, error) {
 	goMod := filepath.Join(repoRoot, "go.mod")
@@ -65,6 +78,11 @@ func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, er
 		index.Relations = append(index.Relations, rels...)
 		return nil
 	})
+	if typedRels, ok := inferTypedRelationships(ctx, repoRoot, index.Files, repo.Root); ok {
+		index.Relations = append(index.Relations, typedRels...)
+	} else {
+		index.Relations = append(index.Relations, inferCodeRelationships(index.Files, repo.Root)...)
+	}
 	return index, err
 }
 
@@ -123,13 +141,13 @@ func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Tim
 					continue
 				}
 				line := fset.Position(ts.Pos()).Line
-				switch ts.Type.(type) {
+				switch typ := ts.Type.(type) {
 				case *ast.StructType:
 					file.Structs = append(file.Structs, domain.Struct{Name: ts.Name.Name, Path: rel, Line: line})
 					nodes = append(nodes, node("Struct", ts.Name.Name, rel+"#"+ts.Name.Name, repo, parsed.Name.Name, layer, now))
 					rels = append(rels, relate("File", rel, "Struct", rel+"#"+ts.Name.Name, "DEFINES", repo.Root))
 				case *ast.InterfaceType:
-					file.Interfaces = append(file.Interfaces, domain.Interface{Name: ts.Name.Name, Path: rel, Line: line})
+					file.Interfaces = append(file.Interfaces, domain.Interface{Name: ts.Name.Name, Path: rel, Line: line, Methods: interfaceMethods(typ)})
 					nodes = append(nodes, node("Interface", ts.Name.Name, rel+"#"+ts.Name.Name, repo, parsed.Name.Name, layer, now))
 					rels = append(rels, relate("File", rel, "Interface", rel+"#"+ts.Name.Name, "DEFINES", repo.Root))
 				}
@@ -142,16 +160,19 @@ func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Tim
 					file.Tests = append(file.Tests, domain.Test{Name: d.Name.Name, Path: rel, Line: line})
 					nodes = append(nodes, node("Test", d.Name.Name, rel+"#"+d.Name.Name, repo, parsed.Name.Name, layer, now))
 					rels = append(rels, relate("File", rel, "Test", rel+"#"+d.Name.Name, "DEFINES", repo.Root))
+					file.Calls = append(file.Calls, collectCalls(d.Body, "Test", rel+"#"+d.Name.Name)...)
 				} else {
 					file.Functions = append(file.Functions, fn)
 					nodes = append(nodes, node("Function", d.Name.Name, rel+"#"+d.Name.Name, repo, parsed.Name.Name, layer, now))
 					rels = append(rels, relate("File", rel, "Function", rel+"#"+d.Name.Name, "DEFINES", repo.Root))
+					file.Calls = append(file.Calls, collectCalls(d.Body, "Function", rel+"#"+d.Name.Name)...)
 				}
 			} else {
 				recv := receiverName(d.Recv)
 				file.Methods = append(file.Methods, domain.Method{Receiver: recv, Name: d.Name.Name, Path: rel, Line: line})
 				nodes = append(nodes, node("Method", recv+"."+d.Name.Name, rel+"#"+recv+"."+d.Name.Name, repo, parsed.Name.Name, layer, now))
 				rels = append(rels, relate("File", rel, "Method", rel+"#"+recv+"."+d.Name.Name, "DEFINES", repo.Root))
+				file.Calls = append(file.Calls, collectCalls(d.Body, "Method", rel+"#"+recv+"."+d.Name.Name)...)
 			}
 		}
 	}
@@ -365,6 +386,429 @@ func typeSpec(decl ast.Decl) (*ast.TypeSpec, bool) {
 		}
 	}
 	return nil, false
+}
+
+func interfaceMethods(typ *ast.InterfaceType) []string {
+	var methods []string
+	if typ == nil || typ.Methods == nil {
+		return methods
+	}
+	for _, field := range typ.Methods.List {
+		for _, name := range field.Names {
+			methods = append(methods, name.Name)
+		}
+	}
+	return methods
+}
+
+func collectCalls(body *ast.BlockStmt, callerKind, callerKey string) []domain.Call {
+	if body == nil {
+		return nil
+	}
+	var calls []domain.Call
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch f := call.Fun.(type) {
+		case *ast.Ident:
+			calls = append(calls, domain.Call{CallerKind: callerKind, CallerKey: callerKey, Callee: f.Name})
+		case *ast.SelectorExpr:
+			calls = append(calls, domain.Call{CallerKind: callerKind, CallerKey: callerKey, Callee: f.Sel.Name})
+		}
+		return true
+	})
+	return calls
+}
+
+func inferCodeRelationships(files []domain.IndexedFile, repoRoot string) []domain.GraphRelationship {
+	symbols := map[string][]graphTarget{}
+	structMethods := map[string]map[string]struct{}{}
+	structKeys := map[string]string{}
+	var interfaces []domain.Interface
+	for _, f := range files {
+		for _, fn := range f.Functions {
+			symbols[fn.Name] = append(symbols[fn.Name], graphTarget{label: "Function", key: f.Path + "#" + fn.Name})
+		}
+		for _, m := range f.Methods {
+			symbols[m.Name] = append(symbols[m.Name], graphTarget{label: "Method", key: f.Path + "#" + m.Receiver + "." + m.Name})
+			symbols[m.Receiver+"."+m.Name] = append(symbols[m.Receiver+"."+m.Name], graphTarget{label: "Method", key: f.Path + "#" + m.Receiver + "." + m.Name})
+			if structMethods[m.Receiver] == nil {
+				structMethods[m.Receiver] = map[string]struct{}{}
+			}
+			structMethods[m.Receiver][m.Name] = struct{}{}
+		}
+		for _, s := range f.Structs {
+			structKeys[s.Name] = f.Path + "#" + s.Name
+		}
+		interfaces = append(interfaces, f.Interfaces...)
+	}
+	var rels []domain.GraphRelationship
+	for _, f := range files {
+		for _, call := range f.Calls {
+			for _, t := range symbols[call.Callee] {
+				rels = append(rels, relate(call.CallerKind, call.CallerKey, t.label, t.key, "CALLS", repoRoot))
+				break
+			}
+		}
+		for _, c := range f.Contracts {
+			contractKey := f.Path + "#contract:" + c.Kind + ":" + c.Name
+			for _, t := range relatedCodeTargets(c, symbols) {
+				rels = append(rels, relate(c.Kind, contractKey, t.label, t.key, "RELATED_TO", repoRoot))
+			}
+		}
+		for _, test := range f.Tests {
+			testKey := f.Path + "#" + test.Name
+			for _, t := range testTargets(test.Name, symbols) {
+				rels = append(rels, relate(t.label, t.key, "Test", testKey, "TESTED_BY", repoRoot))
+			}
+		}
+	}
+	for _, iface := range interfaces {
+		required := map[string]struct{}{}
+		for _, m := range iface.Methods {
+			required[m] = struct{}{}
+		}
+		if len(required) == 0 {
+			continue
+		}
+		for structName, methods := range structMethods {
+			if implementsAll(methods, required) {
+				if structKey := structKeys[structName]; structKey != "" {
+					rels = append(rels, relate("Struct", structKey, "Interface", iface.Path+"#"+iface.Name, "IMPLEMENTS", repoRoot))
+				}
+			}
+		}
+	}
+	return rels
+}
+
+func inferTypedRelationships(ctx context.Context, repoRoot string, files []domain.IndexedFile, graphRepo string) ([]domain.GraphRelationship, bool) {
+	cfg := &packages.Config{
+		Context: ctx,
+		Dir:     repoRoot,
+		Mode: packages.NeedName |
+			packages.NeedFiles |
+			packages.NeedSyntax |
+			packages.NeedTypes |
+			packages.NeedTypesInfo |
+			packages.NeedTypesSizes,
+	}
+	pkgs, err := packages.Load(cfg, "./...")
+	if err != nil || len(pkgs) == 0 {
+		return nil, false
+	}
+	funcTargets := map[string]typedTarget{}
+	var structs []struct {
+		name string
+		key  string
+		typ  *types.Named
+		path string
+	}
+	var ifaces []struct {
+		name string
+		key  string
+		typ  *types.Interface
+	}
+	fileSet := map[string]struct{}{}
+	for _, f := range files {
+		fileSet[filepath.ToSlash(f.Path)] = struct{}{}
+	}
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) > 0 && pkg.TypesInfo == nil {
+			continue
+		}
+		for ident, obj := range pkg.TypesInfo.Defs {
+			if obj == nil || ident == nil {
+				continue
+			}
+			rel := relFromPackagePos(repoRoot, pkg, ident.Pos())
+			if rel == "" {
+				continue
+			}
+			if _, ok := fileSet[filepath.ToSlash(rel)]; !ok {
+				continue
+			}
+			switch o := obj.(type) {
+			case *types.Func:
+				label, key := typedFuncTarget(rel, o)
+				funcTargets[objectKey(o)] = typedTarget{label: label, key: key, obj: o}
+			case *types.TypeName:
+				named, ok := o.Type().(*types.Named)
+				if !ok {
+					continue
+				}
+				switch u := named.Underlying().(type) {
+				case *types.Struct:
+					_ = u
+					structs = append(structs, struct {
+						name string
+						key  string
+						typ  *types.Named
+						path string
+					}{name: o.Name(), key: rel + "#" + o.Name(), typ: named, path: rel})
+				case *types.Interface:
+					ifaces = append(ifaces, struct {
+						name string
+						key  string
+						typ  *types.Interface
+					}{name: o.Name(), key: rel + "#" + o.Name(), typ: u.Complete()})
+				}
+			}
+		}
+	}
+	var rels []domain.GraphRelationship
+	for _, pkg := range pkgs {
+		if pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				fn, ok := n.(*ast.FuncDecl)
+				if !ok {
+					return true
+				}
+				rel := relFromPackagePos(repoRoot, pkg, fn.Name.Pos())
+				if rel == "" {
+					return false
+				}
+				callerObj, ok := pkg.TypesInfo.Defs[fn.Name].(*types.Func)
+				if !ok {
+					return false
+				}
+				callerLabel, callerKey := typedFuncTarget(rel, callerObj)
+				ast.Inspect(fn.Body, func(child ast.Node) bool {
+					call, ok := child.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					calleeObj := typedCallObject(pkg.TypesInfo, call)
+					if calleeObj == nil {
+						return true
+					}
+					if target, ok := funcTargets[objectKey(calleeObj)]; ok && target.key != callerKey {
+						rels = append(rels, relate(callerLabel, callerKey, target.label, target.key, "CALLS", graphRepo))
+					}
+					return true
+				})
+				return false
+			})
+		}
+	}
+	for _, st := range structs {
+		for _, iface := range ifaces {
+			if types.Implements(st.typ, iface.typ) || types.Implements(types.NewPointer(st.typ), iface.typ) {
+				rels = append(rels, relate("Struct", st.key, "Interface", iface.key, "IMPLEMENTS", graphRepo))
+			}
+		}
+	}
+	for _, f := range files {
+		for _, c := range f.Contracts {
+			contractKey := f.Path + "#contract:" + c.Kind + ":" + c.Name
+			for _, target := range typedContractTargets(c, funcTargets) {
+				rels = append(rels, relate(c.Kind, contractKey, target.label, target.key, "RELATED_TO", graphRepo))
+			}
+		}
+		for _, test := range f.Tests {
+			testKey := f.Path + "#" + test.Name
+			for _, target := range typedTestTargets(test.Name, funcTargets) {
+				rels = append(rels, relate(target.label, target.key, "Test", testKey, "TESTED_BY", graphRepo))
+			}
+		}
+	}
+	return dedupeRelationships(rels), len(rels) > 0
+}
+
+func typedFuncTarget(rel string, fn *types.Func) (string, string) {
+	sig, _ := fn.Type().(*types.Signature)
+	if sig != nil && sig.Recv() != nil {
+		recv := typeBaseName(sig.Recv().Type())
+		return "Method", rel + "#" + recv + "." + fn.Name()
+	}
+	return "Function", rel + "#" + fn.Name()
+}
+
+func typedCallObject(info *types.Info, call *ast.CallExpr) *types.Func {
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		if fn, ok := info.Uses[f].(*types.Func); ok {
+			return fn
+		}
+	case *ast.SelectorExpr:
+		if fn, ok := info.Uses[f.Sel].(*types.Func); ok {
+			return fn
+		}
+	case *ast.IndexExpr:
+		if ident, ok := f.X.(*ast.Ident); ok {
+			if fn, ok := info.Uses[ident].(*types.Func); ok {
+				return fn
+			}
+		}
+	}
+	return nil
+}
+
+func relFromPackagePos(repoRoot string, pkg *packages.Package, pos token.Pos) string {
+	if pkg == nil || pkg.Fset == nil || pos == token.NoPos {
+		return ""
+	}
+	filename := pkg.Fset.Position(pos).Filename
+	if filename == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(repoRoot, filename)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+func objectKey(obj types.Object) string {
+	if obj == nil {
+		return ""
+	}
+	if fn, ok := obj.(*types.Func); ok {
+		sig, _ := fn.Type().(*types.Signature)
+		pkgPath := ""
+		if fn.Pkg() != nil {
+			pkgPath = fn.Pkg().Path()
+		}
+		if sig != nil && sig.Recv() != nil {
+			return pkgPath + "." + typeBaseName(sig.Recv().Type()) + "." + fn.Name()
+		}
+		return pkgPath + "." + fn.Name()
+	}
+	pkgPath := ""
+	if obj.Pkg() != nil {
+		pkgPath = obj.Pkg().Path()
+	}
+	return pkgPath + "." + obj.Name()
+}
+
+func typeBaseName(t types.Type) string {
+	switch tt := t.(type) {
+	case *types.Pointer:
+		return typeBaseName(tt.Elem())
+	case *types.Named:
+		return tt.Obj().Name()
+	default:
+		s := ttString(t)
+		if idx := strings.LastIndex(s, "."); idx >= 0 {
+			return s[idx+1:]
+		}
+		return s
+	}
+}
+
+func ttString(t types.Type) string {
+	if t == nil {
+		return ""
+	}
+	return types.TypeString(t, func(*types.Package) string { return "" })
+}
+
+func typedContractTargets(c domain.Contract, targets map[string]typedTarget) []typedTarget {
+	parts := contractNameParts(c)
+	var out []typedTarget
+	for _, part := range parts {
+		if len(part) < 3 {
+			continue
+		}
+		for _, target := range targets {
+			key := strings.ToLower(target.key)
+			if strings.Contains(key, part) || strings.Contains(part, strings.ToLower(target.obj.Name())) {
+				out = append(out, target)
+			}
+		}
+	}
+	if len(out) > 4 {
+		return out[:4]
+	}
+	return out
+}
+
+func typedTestTargets(testName string, targets map[string]typedTarget) []typedTarget {
+	lower := strings.ToLower(strings.TrimPrefix(testName, "Test"))
+	var out []typedTarget
+	for _, target := range targets {
+		name := strings.ToLower(target.obj.Name())
+		if name != "" && (strings.Contains(lower, name) || strings.Contains(name, lower)) {
+			out = append(out, target)
+		}
+	}
+	if len(out) > 3 {
+		return out[:3]
+	}
+	return out
+}
+
+func dedupeRelationships(rels []domain.GraphRelationship) []domain.GraphRelationship {
+	seen := map[string]struct{}{}
+	var out []domain.GraphRelationship
+	for _, rel := range rels {
+		key := rel.FromLabel + "|" + rel.FromKey + "|" + rel.Type + "|" + rel.ToLabel + "|" + rel.ToKey
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, rel)
+	}
+	return out
+}
+
+func relatedCodeTargets(c domain.Contract, symbols map[string][]graphTarget) []graphTarget {
+	var out []graphTarget
+	names := contractNameParts(c)
+	for _, name := range names {
+		for key, targets := range symbols {
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, name) || strings.Contains(name, lower) {
+				out = append(out, targets...)
+			}
+		}
+	}
+	if len(out) > 4 {
+		return out[:4]
+	}
+	return out
+}
+
+func contractNameParts(c domain.Contract) []string {
+	name := strings.ToLower(c.Name)
+	name = strings.TrimPrefix(name, "graphqltype.")
+	name = strings.TrimPrefix(name, "grpcservice.")
+	name = strings.TrimPrefix(name, "db.")
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '.' || r == '/' || r == '-' || r == '_' || r == ' '
+	})
+	for _, p := range []string{"resolver", "handler", "register", "list", "get", "create", "update", "delete"} {
+		parts = append(parts, p)
+	}
+	return parts
+}
+
+func testTargets(testName string, symbols map[string][]graphTarget) []graphTarget {
+	lower := strings.ToLower(strings.TrimPrefix(testName, "Test"))
+	var out []graphTarget
+	for key, targets := range symbols {
+		if strings.Contains(lower, strings.ToLower(key)) || strings.Contains(strings.ToLower(key), lower) {
+			out = append(out, targets...)
+		}
+	}
+	if len(out) > 3 {
+		return out[:3]
+	}
+	return out
+}
+
+func implementsAll(methods, required map[string]struct{}) bool {
+	for req := range required {
+		if _, ok := methods[req]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func appendContractNodes(nodes *[]domain.GraphNode, rels *[]domain.GraphRelationship, filePath string, repo domain.Repository, pkg, layer string, now time.Time, contracts []domain.Contract) {

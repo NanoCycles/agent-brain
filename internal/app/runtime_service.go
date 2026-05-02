@@ -24,6 +24,10 @@ func (s *RuntimeService) Down(ctx context.Context, spec ports.RuntimeSpec) error
 	return s.runtime.Down(ctx, spec)
 }
 
+func (s *RuntimeService) Destroy(ctx context.Context, spec ports.RuntimeSpec) error {
+	return s.runtime.Destroy(ctx, spec)
+}
+
 type StatusReport struct {
 	DockerAvailable bool
 	Neo4jRunning    bool

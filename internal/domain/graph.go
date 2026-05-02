@@ -51,9 +51,10 @@ type Struct struct {
 }
 
 type Interface struct {
-	Name string
-	Path string
-	Line int
+	Name    string
+	Path    string
+	Line    int
+	Methods []string
 }
 
 type Test struct {
@@ -69,6 +70,12 @@ type Contract struct {
 	Operation  string  `json:"operation" yaml:"operation"`
 	Evidence   string  `json:"evidence" yaml:"evidence"`
 	Confidence float64 `json:"confidence" yaml:"confidence"`
+}
+
+type Call struct {
+	CallerKind string `json:"caller_kind" yaml:"caller_kind"`
+	CallerKey  string `json:"caller_key" yaml:"caller_key"`
+	Callee     string `json:"callee" yaml:"callee"`
 }
 
 type CodeIndex struct {

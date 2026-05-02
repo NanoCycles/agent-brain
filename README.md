@@ -51,6 +51,7 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 - `agent-brain init`: creates `.agent-brain/` and `.ai/` working directories.
 - `agent-brain up`: verifies Docker and starts Neo4j through Docker Compose.
 - `agent-brain down`: stops local services without deleting data.
+- `agent-brain destroy --confirm`: removes this project's local Neo4j volume and SQLite metadata without touching source code, config, rules, context, or memory proposals.
 - `agent-brain status`: prints Docker, Neo4j, SQLite, initialization, index, and graph stats.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
@@ -74,6 +75,7 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 - Cobra: stable CLI command framework.
 - modernc.org/sqlite: SQLite driver for `database/sql` without CGO.
 - neo4j-go-driver: official Neo4j Go driver.
+- golang.org/x/tools/go/packages: typed Go package loading for more accurate call graph and interface implementation analysis.
 - yaml.v3: small YAML parser for local rules and config.
 
 ## Roadmap

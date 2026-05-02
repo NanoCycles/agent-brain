@@ -35,6 +35,7 @@ type IndexedFile struct {
 	Tests      []Test
 	Imports    []string
 	Contracts  []Contract
+	Calls      []Call
 }
 
 type CapabilityEvidence struct {

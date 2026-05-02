@@ -11,5 +11,6 @@ type GraphStore interface {
 	SaveIndex(ctx context.Context, index domain.CodeIndex) error
 	Stats(ctx context.Context) (domain.GraphStats, error)
 	SearchImpact(ctx context.Context, topic string, limit int) ([]domain.GraphNode, error)
+	ExpandImpact(ctx context.Context, repoRoot string, topics []string, limit int) ([]domain.GraphNode, error)
 	Close(ctx context.Context) error
 }

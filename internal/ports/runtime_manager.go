@@ -27,6 +27,7 @@ type RuntimeManager interface {
 	Neo4jRunning(ctx context.Context, spec RuntimeSpec) bool
 	Up(ctx context.Context, spec RuntimeSpec) error
 	Down(ctx context.Context, spec RuntimeSpec) error
+	Destroy(ctx context.Context, spec RuntimeSpec) error
 	Status(ctx context.Context, spec RuntimeSpec) RuntimeStatus
 	GraphStats(ctx context.Context) (domain.GraphStats, error)
 }

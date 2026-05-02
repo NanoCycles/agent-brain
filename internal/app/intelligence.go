@@ -228,6 +228,11 @@ func RankFileCandidates(ctx context.Context, repoRoot string, files []domain.Ind
 			c.Category = "related_test"
 			c.Evidence = append(c.Evidence, "test appears related to a primary candidate")
 		}
+		if strings.HasSuffix(path, "_test.go") && testMatchesTask(f, analysis) {
+			c.Score += 45
+			c.Category = "related_test"
+			c.Evidence = append(c.Evidence, "test name/symbol/content matches task topics or capability")
+		}
 		if isAgentBrainTooling(path) && analysis.MainCapability != "agent-brain" && !containsCapability(hay, analysis.MainCapability) {
 			c.Score -= 50
 			c.Warning = "tooling file; likely not target application code"
@@ -242,7 +247,9 @@ func RankFileCandidates(ctx context.Context, repoRoot string, files []domain.Ind
 		if len(c.MatchedTopics) == 0 && len(c.MatchedCapabilities) == 0 {
 			c.Score -= 40
 		}
-		if c.Score >= 120 {
+		if strings.HasSuffix(path, "_test.go") && c.Category == "related_test" {
+			// Keep tests distinct from implementation candidates even when they score highly.
+		} else if c.Score >= 120 {
 			c.Category = "primary_candidate"
 		} else if c.Score >= 70 && c.Category != "related_test" {
 			c.Category = "supporting_infrastructure"
@@ -809,6 +816,22 @@ func isRelatedTest(f domain.IndexedFile, existing []domain.FileCandidate) bool {
 	for _, c := range existing {
 		if c.Category == "primary_candidate" && strings.Contains(filepath.Base(c.Path), base) {
 			return true
+		}
+	}
+	return false
+}
+
+func testMatchesTask(f domain.IndexedFile, analysis domain.TaskAnalysis) bool {
+	hay := filepath.ToSlash(strings.ToLower(f.Path)) + " " + symbolText(f)
+	if containsCapability(hay, analysis.MainCapability) {
+		return true
+	}
+	for _, topic := range analysis.TechnicalTopics {
+		parts := strings.Fields(topic.Name)
+		for _, part := range parts {
+			if len(part) >= 4 && strings.Contains(hay, part) {
+				return true
+			}
 		}
 	}
 	return false

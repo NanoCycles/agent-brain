@@ -123,6 +123,26 @@ func TestFileRankingRanksGraphQLContractHigh(t *testing.T) {
 	}
 }
 
+func TestFileRankingPrioritizesRelatedTests(t *testing.T) {
+	root := t.TempDir()
+	files := []domain.IndexedFile{
+		{Path: filepath.Join("internal", "adapters", "graphql", "resolver.go"), Package: "graphql", Layer: "adapter_graphql", Contracts: []domain.Contract{{Kind: "GraphQLField", Name: "Project.count"}}},
+		{Path: filepath.Join("internal", "adapters", "graphql", "resolver_test.go"), Package: "graphql", Layer: "adapter_graphql", Tests: []domain.Test{{Name: "TestProjectNestedCount"}}},
+	}
+	analysis := AnalyzeTask(domain.Task{ID: "BUG-001", Content: "GraphQL nested count returns null"})
+	caps := DetectRepoCapabilities(root, files)
+	candidates := RankFileCandidates(context.Background(), root, files, analysis, caps, nil)
+	var found bool
+	for _, c := range candidates {
+		if strings.HasSuffix(c.Path, "resolver_test.go") && c.Category == "related_test" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected related test candidate: %#v", candidates)
+	}
+}
+
 func TestContextQualityLowWhenDomainMissing(t *testing.T) {
 	analysis := AnalyzeTask(domain.Task{ID: "BUG-001", Content: "GraphQL nested count returns null"})
 	q := ComputeContextQuality(analysis, domain.RepoCapabilities{MainLanguage: "go"}, nil, domain.RuleGroups{}, false)

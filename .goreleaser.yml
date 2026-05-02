@@ -37,6 +37,7 @@ archives:
       - templates/**
       - deployments/**
       - examples/**
+      - scripts/**
 
 checksum:
   name_template: "checksums.txt"

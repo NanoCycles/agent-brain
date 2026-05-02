@@ -42,6 +42,48 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 5. After implementation, run `agent-brain review-diff`.
 6. Generate memory with `agent-brain memory-proposal --task .ai/tasks/TICKET.md`.
 
+## MCP Integration
+
+`agent-brain` can run as a local stdio MCP server so coding agents can request compact project context directly instead of spending tokens exploring the whole repository.
+
+```json
+{
+  "mcpServers": {
+    "agent-brain": {
+      "command": "agent-brain",
+      "args": ["mcp", "serve"],
+      "cwd": "/absolute/path/to/your/project"
+    }
+  }
+}
+```
+
+On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
+
+```json
+{
+  "mcpServers": {
+    "agent-brain": {
+      "command": "C:\\tools\\agent-brain.exe",
+      "args": ["mcp", "serve"],
+      "cwd": "C:\\work\\your-project"
+    }
+  }
+}
+```
+
+Recommended agent flow:
+
+1. Call `prepare_context` with `task_path` or `topic` at the start of a task.
+2. Read the returned handoff and generated context pack.
+3. Use `impact` for focused follow-up questions.
+4. Use `review_diff` before finalizing changes.
+5. Use `memory_proposal` after a bug or feature is solved; memory is not applied automatically.
+
+The MCP server exposes these tools: `prepare_context`, `get_context_pack`, `impact`, `review_diff`, `status`, `memory_proposal`, and `handoff`.
+
+Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
+
 ## Commands
 
 - `agent-brain init`: creates `.agent-brain/` and `.ai/` working directories.
@@ -54,6 +96,7 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 - `agent-brain prepare --fast`: skips reindexing when the last index is recent.
 - `agent-brain prepare --no-index`: generates context from current metadata without indexing.
 - `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
+- `agent-brain mcp serve`: starts the stdio MCP server for AI coding agents.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
 - `agent-brain impact --topic "text"`: searches graph impact.
@@ -82,7 +125,7 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 ## Roadmap
 
 - Qdrant/vector DB for semantic retrieval.
-- MCP server adapter.
+- Deeper MCP resources/prompts and streaming progress.
 - Web dashboard.
 - Desktop app.
 - Multi-repo workspace support.

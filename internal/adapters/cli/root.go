@@ -10,6 +10,7 @@ import (
 	dockerruntime "github.com/NanoCycles/agent-brain/internal/adapters/docker"
 	"github.com/NanoCycles/agent-brain/internal/adapters/filesystem"
 	"github.com/NanoCycles/agent-brain/internal/adapters/golang"
+	"github.com/NanoCycles/agent-brain/internal/adapters/mcp"
 	neo "github.com/NanoCycles/agent-brain/internal/adapters/neo4j"
 	sqlstore "github.com/NanoCycles/agent-brain/internal/adapters/sqlite"
 	"github.com/NanoCycles/agent-brain/internal/app"
@@ -22,7 +23,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), prepareCmd(ctx), handoffCmd(), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
 	return root
 }
 
@@ -248,6 +249,23 @@ func handoffCmd() *cobra.Command {
 	c.Flags().StringVar(&task, "task", "", "task markdown path")
 	c.Flags().StringVar(&contextPath, "context", "", "context pack markdown path")
 	return c
+}
+
+func mcpCmd(ctx context.Context) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "mcp",
+		Short: "Run agent-brain MCP integrations",
+	}
+	serve := &cobra.Command{
+		Use:   "serve",
+		Short: "Run the local stdio MCP server for AI coding agents",
+		Long:  "Run the local stdio MCP server for AI coding agents. The command writes only MCP JSON-RPC messages to stdout.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return mcp.NewServer(os.Stdin, os.Stdout).Serve(ctx)
+		},
+	}
+	root.AddCommand(serve)
+	return root
 }
 
 func indexCmd(ctx context.Context) *cobra.Command {

@@ -68,6 +68,7 @@ jobs:
 
       - name: Push Chocolatey package
         if: ${{ env.CHOCOLATEY_API_KEY != '' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           $nupkg = (Get-ChildItem "dist/chocolatey/agent-brain/*.nupkg" | Select-Object -First 1).FullName
@@ -104,4 +105,5 @@ jobs:
 
       - name: Publish npm package
         if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        continue-on-error: true
         run: npm publish --access public

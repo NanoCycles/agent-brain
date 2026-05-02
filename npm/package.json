@@ -1,0 +1,31 @@
+{
+  "name": "@nanocycles/agent-brain",
+  "version": "0.0.0",
+  "description": "Local context intelligence CLI and MCP server for AI coding agents.",
+  "license": "MIT",
+  "homepage": "https://github.com/NanoCycles/agent-brain",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NanoCycles/agent-brain.git"
+  },
+  "bin": {
+    "agent-brain": "bin/agent-brain.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "vendor/"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

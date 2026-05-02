@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -23,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx))
 	return root
 }
 
@@ -177,6 +178,66 @@ func statusCmd(ctx context.Context) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func doctorCmd(ctx context.Context) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose local agent-brain prerequisites and project wiring",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, _ := loadOrDefaultConfig(p)
+			spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			report := app.NewRuntimeService(dockerruntime.Runtime{}, graph).Status(ctx, spec)
+			fmt.Fprintf(cmd.OutOrStdout(), "agent-brain doctor\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "- repo root: %s\n", p.Root)
+			fmt.Fprintf(cmd.OutOrStdout(), "- config: %s\n", yesNo(filesystem.LocalFS{}.Exists(p.ConfigPath)))
+			fmt.Fprintf(cmd.OutOrStdout(), "- docker: %s\n", yesNo(report.DockerAvailable))
+			fmt.Fprintf(cmd.OutOrStdout(), "- neo4j: %s (%s)\n", yesNo(report.Neo4jRunning), cfg.Neo4jURI)
+			fmt.Fprintf(cmd.OutOrStdout(), "- sqlite: %s\n", p.SQLitePath)
+			fmt.Fprintf(cmd.OutOrStdout(), "- graph: %d nodes / %d relationships\n", report.GraphStats.Nodes, report.GraphStats.Relationships)
+			if report.DockerAvailable && !report.Neo4jRunning {
+				fmt.Fprintln(cmd.OutOrStdout(), "next: run agent-brain up")
+			}
+			if !report.DockerAvailable {
+				fmt.Fprintln(cmd.OutOrStdout(), "next: start Docker Desktop, then run agent-brain up")
+			}
+			return nil
+		},
+	}
+}
+
+func logsCmd(ctx context.Context) *cobra.Command {
+	var tail int
+	c := &cobra.Command{
+		Use:   "logs",
+		Short: "Show local agent-brain runtime logs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, _ := loadOrDefaultConfig(p)
+			spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+			name := spec.ContainerName
+			c := exec.CommandContext(ctx, "docker", "logs", "--tail", fmt.Sprintf("%d", tail), name)
+			out, err := c.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("docker logs failed for %s: %w\n%s", name, err, strings.TrimSpace(string(out)))
+			}
+			fmt.Fprint(cmd.OutOrStdout(), string(out))
+			return nil
+		},
+	}
+	c.Flags().IntVar(&tail, "tail", 120, "number of log lines")
+	return c
 }
 
 func prepareCmd(ctx context.Context) *cobra.Command {
@@ -455,7 +516,7 @@ func memoryProposalCmd(ctx context.Context) *cobra.Command {
 	return c
 }
 
-func memoryApplyCmd() *cobra.Command {
+func memoryApplyCmd(ctx context.Context) *cobra.Command {
 	var yes bool
 	c := &cobra.Command{
 		Use:   "memory-apply <proposal.yml>",
@@ -469,11 +530,21 @@ func memoryApplyCmd() *cobra.Command {
 				fmt.Fscan(os.Stdin, &answer)
 				yes = strings.EqualFold(answer, "yes")
 			}
-			appliedPath, err := app.NewMemoryService(nil).ApplyProposal(args[0], p.LocalMemoryDir, yes)
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			_ = store.Init(ctx)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			appliedPath, err := app.NewMemoryService(store, graph).ApplyProposal(ctx, p.Root, args[0], p.LocalMemoryDir, yes)
 			if err != nil {
 				return fmt.Errorf("confirmation required or invalid proposal; rerun with --yes after reviewing %s", args[0])
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Memory proposal applied locally: %s\n", appliedPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Memory proposal applied locally and persisted: %s\n", appliedPath)
 			return nil
 		},
 	}

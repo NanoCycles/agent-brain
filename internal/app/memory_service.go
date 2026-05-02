@@ -8,16 +8,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/NanoCycles/agent-brain/internal/domain"
 	"github.com/NanoCycles/agent-brain/internal/ports"
 	"gopkg.in/yaml.v3"
 )
 
 type MemoryService struct {
-	meta ports.MetadataStore
+	meta  ports.MetadataStore
+	graph ports.GraphStore
 }
 
-func NewMemoryService(meta ports.MetadataStore) *MemoryService {
-	return &MemoryService{meta: meta}
+func NewMemoryService(meta ports.MetadataStore, graph ...ports.GraphStore) *MemoryService {
+	var g ports.GraphStore
+	if len(graph) > 0 {
+		g = graph[0]
+	}
+	return &MemoryService{meta: meta, graph: g}
 }
 
 type MemoryProposal struct {
@@ -61,11 +67,13 @@ func (s *MemoryService) GenerateProposal(ctx context.Context, repoRoot, taskPath
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", err
 	}
-	_ = s.meta.SaveMemoryProposal(ctx, task.ID, path)
+	if s.meta != nil {
+		_ = s.meta.SaveMemoryProposal(ctx, task.ID, path)
+	}
 	return path, nil
 }
 
-func (s *MemoryService) ApplyProposal(path, outputDir string, confirmed bool) (string, error) {
+func (s *MemoryService) ApplyProposal(ctx context.Context, repoRoot, path, outputDir string, confirmed bool) (string, error) {
 	if !confirmed {
 		return "", os.ErrPermission
 	}
@@ -87,6 +95,17 @@ func (s *MemoryService) ApplyProposal(path, outputDir string, confirmed bool) (s
 	appliedPath := filepath.Join(appliedDir, prop.TaskID+".yml")
 	if err := os.WriteFile(appliedPath, data, 0o644); err != nil {
 		return "", err
+	}
+	record := domain.MemoryRecord{
+		TaskID: prop.TaskID, RepoRoot: repoRoot, AppliedAt: time.Now().UTC(), SourcePath: path,
+		LessonsLearned: prop.LessonsLearned, SuggestedRules: prop.SuggestedRules, RelatedBugs: prop.RelatedBugs,
+		TestsAdded: prop.TestsAdded, FilesModified: prop.FilesModified, RisksDetected: prop.RisksDetected,
+	}
+	if s.meta != nil {
+		_ = s.meta.SaveAppliedMemory(ctx, record)
+	}
+	if s.graph != nil {
+		_ = s.graph.SaveMemory(ctx, record)
 	}
 	return appliedPath, nil
 }

@@ -16,5 +16,7 @@ type MetadataStore interface {
 	RelevantFiles(ctx context.Context, topics []string, limit int) ([]string, error)
 	SaveContextPack(ctx context.Context, pack domain.ContextPack, mdPath, jsonPath string) error
 	SaveMemoryProposal(ctx context.Context, taskID, path string) error
+	SaveAppliedMemory(ctx context.Context, memory domain.MemoryRecord) error
+	AppliedMemories(ctx context.Context, repoRoot string, limit int) ([]domain.MemoryRecord, error)
 	Close() error
 }

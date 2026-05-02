@@ -3,6 +3,7 @@
 .idea/
 bin/
 dist/
+npm/*.tgz
 coverage/
 .tools/
 .env

@@ -155,6 +155,7 @@ func toolDefinitions() []map[string]any {
 		}),
 		tool("review_diff", "Review current git diff for risks, contracts, tests, forbidden files, and rule violations. Read-only.", map[string]any{}),
 		tool("status", "Return project runtime, graph, SQLite, and capability status.", map[string]any{}),
+		tool("doctor", "Diagnose local prerequisites and project wiring for agent-brain.", map[string]any{}),
 		tool("memory_proposal", "Generate a structured memory proposal after a task is implemented. Does not apply memory automatically.", map[string]any{
 			"task_path": map[string]any{"type": "string"},
 		}),
@@ -195,6 +196,8 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 		}
 		return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
 	case "status":
+		return status(ctx, p)
+	case "doctor":
 		return status(ctx, p)
 	case "memory_proposal":
 		taskPath := stringArg(args, "task_path")

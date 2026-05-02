@@ -50,6 +50,12 @@ After the Chocolatey community package is approved, installation becomes:
 choco install agent-brain -y
 ```
 
+With npm:
+
+```sh
+npm install -g @nanocycles/agent-brain
+```
+
 ## Quickstart
 
 ```sh
@@ -117,6 +123,8 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain down`: stops local services without deleting data.
 - `agent-brain destroy --confirm`: removes this project's local Neo4j volume and SQLite metadata without touching source code, config, rules, context, or memory proposals.
 - `agent-brain status`: prints Docker, Neo4j, SQLite, initialization, index, and graph stats.
+- `agent-brain doctor`: diagnoses Docker, Neo4j, SQLite, graph, and project wiring.
+- `agent-brain logs --tail 120`: prints Neo4j runtime logs for the current project.
 - `agent-brain prepare --task .ai/tasks/TICKET.md`: initializes, starts services, indexes, generates context, and prints an agent handoff prompt.
 - `agent-brain prepare --topic "text"`: creates a lightweight task from topic text and prepares context.
 - `agent-brain prepare --budget cavernicola|compact|standard|deep`: controls how much context is returned; default is `cavernicola`.
@@ -131,6 +139,10 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain review-diff`: reviews the current git diff without modifying files.
 - `agent-brain memory-proposal --task .ai/tasks/TICKET.md`: writes a structured memory proposal.
 - `agent-brain memory-apply <proposal.yml>`: validates and applies memory after confirmation.
+
+## Memory Model
+
+Memory is local and explicit. A proposal is first written to `.ai/memory-proposals/` and is not trusted until `memory-apply` is confirmed. Applied memory is stored in SQLite as the local audit/source-of-truth record and mirrored into Neo4j as `Task`, `Memory`, `Rule`, and `Risk` nodes so future impact/context queries can use it. Source code remains the source of truth for implementation details.
 
 ## Security
 
@@ -159,7 +171,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow runs tests and publishes Linux, macOS, Windows archives, checksums, installer scripts, and a Chocolatey `.nupkg`. If the repository secret `CHOCOLATEY_API_KEY` is configured, the workflow also pushes the package to the Chocolatey Community Repository.
+The release workflow runs tests and publishes Linux, macOS, Windows archives, checksums, installer scripts, a Chocolatey `.nupkg`, and an npm package tarball. If `CHOCOLATEY_API_KEY` or `NPM_TOKEN` repository secrets are configured, the workflow also pushes to Chocolatey Community and npm.
 
 ## Roadmap
 

@@ -151,6 +151,49 @@ func (s *Store) ExpandImpact(ctx context.Context, repoRoot string, topics []stri
 	return res.([]domain.GraphNode), nil
 }
 
+func (s *Store) SaveMemory(ctx context.Context, memory domain.MemoryRecord) error {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		params := map[string]any{
+			"repo": memory.RepoRoot, "task_id": memory.TaskID, "source_path": memory.SourcePath,
+			"applied_at": memory.AppliedAt, "lessons": memory.LessonsLearned, "rules": memory.SuggestedRules,
+			"bugs": memory.RelatedBugs, "tests": memory.TestsAdded, "files": memory.FilesModified, "risks": memory.RisksDetected,
+		}
+		if _, err := tx.Run(ctx, `
+			merge (t:Task {repo:$repo, name:$task_id, path:$source_path})
+			set t.source='agent-brain-memory', t.indexed_at=$applied_at, t.confidence=1.0
+			with t
+			unwind $lessons as lesson
+			merge (m:Memory {repo:$repo, name:lesson, path:$task_id + '#lesson:' + lesson})
+			set m.source='agent-brain-memory', m.indexed_at=$applied_at, m.confidence=0.9
+			merge (t)-[:RELATED_TO]->(m)`,
+			params); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Run(ctx, `
+			match (t:Task {repo:$repo, name:$task_id})
+			unwind $rules as rule
+			merge (r:Rule {repo:$repo, name:rule, path:$task_id + '#rule:' + rule})
+			set r.source='agent-brain-memory', r.indexed_at=$applied_at, r.confidence=0.8
+			merge (t)-[:GOVERNED_BY]->(r)`,
+			params); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Run(ctx, `
+			match (t:Task {repo:$repo, name:$task_id})
+			unwind $risks as risk
+			merge (r:Risk {repo:$repo, name:risk, path:$task_id + '#risk:' + risk})
+			set r.source='agent-brain-memory', r.indexed_at=$applied_at, r.confidence=0.8
+			merge (t)-[:AFFECTS]->(r)`,
+			params); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	return err
+}
+
 func (s *Store) Close(ctx context.Context) error {
 	return s.driver.Close(ctx)
 }

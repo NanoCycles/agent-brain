@@ -72,3 +72,36 @@ jobs:
         run: |
           $nupkg = (Get-ChildItem "dist/chocolatey/agent-brain/*.nupkg" | Select-Object -First 1).FullName
           choco push $nupkg --source https://push.chocolatey.org/ --api-key "${env:CHOCOLATEY_API_KEY}"
+
+  npm:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    defaults:
+      run:
+        working-directory: npm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set package version
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+
+      - name: Pack npm package
+        run: npm pack
+
+      - name: Upload npm package to release
+        run: gh release upload "${GITHUB_REF_NAME}" ./*.tgz --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish npm package
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish --access public

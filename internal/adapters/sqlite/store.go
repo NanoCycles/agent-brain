@@ -36,6 +36,7 @@ func (s *Store) Init(ctx context.Context) error {
 		`create table if not exists indexed_files (repo_root text, path text, package text, layer text, hash text, indexed_at text, symbols_json text, imports_json text, primary key(repo_root, path))`,
 		`create table if not exists context_packs (task_id text primary key, generated_at text, md_path text, json_path text, summary text)`,
 		`create table if not exists memory_proposals (task_id text primary key, path text, created_at text, applied_at text)`,
+		`create table if not exists applied_memories (task_id text primary key, repo_root text, source_path text, applied_at text, lessons_json text, rules_json text, bugs_json text, tests_json text, files_json text, risks_json text)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -186,6 +187,54 @@ func (s *Store) SaveMemoryProposal(ctx context.Context, taskID, path string) err
 		on conflict(task_id) do update set path=excluded.path, created_at=excluded.created_at`,
 		taskID, path, time.Now().Format(time.RFC3339))
 	return err
+}
+
+func (s *Store) SaveAppliedMemory(ctx context.Context, memory domain.MemoryRecord) error {
+	lessons, _ := json.Marshal(memory.LessonsLearned)
+	rules, _ := json.Marshal(memory.SuggestedRules)
+	bugs, _ := json.Marshal(memory.RelatedBugs)
+	tests, _ := json.Marshal(memory.TestsAdded)
+	files, _ := json.Marshal(memory.FilesModified)
+	risks, _ := json.Marshal(memory.RisksDetected)
+	if memory.AppliedAt.IsZero() {
+		memory.AppliedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `insert into applied_memories(task_id,repo_root,source_path,applied_at,lessons_json,rules_json,bugs_json,tests_json,files_json,risks_json) values(?,?,?,?,?,?,?,?,?,?)
+		on conflict(task_id) do update set repo_root=excluded.repo_root, source_path=excluded.source_path, applied_at=excluded.applied_at, lessons_json=excluded.lessons_json, rules_json=excluded.rules_json, bugs_json=excluded.bugs_json, tests_json=excluded.tests_json, files_json=excluded.files_json, risks_json=excluded.risks_json`,
+		memory.TaskID, memory.RepoRoot, memory.SourcePath, memory.AppliedAt.Format(time.RFC3339), string(lessons), string(rules), string(bugs), string(tests), string(files), string(risks))
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `update memory_proposals set applied_at=? where task_id=?`, memory.AppliedAt.Format(time.RFC3339), memory.TaskID)
+	return nil
+}
+
+func (s *Store) AppliedMemories(ctx context.Context, repoRoot string, limit int) ([]domain.MemoryRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `select task_id, repo_root, source_path, applied_at, lessons_json, rules_json, bugs_json, tests_json, files_json, risks_json from applied_memories where repo_root=? order by applied_at desc limit ?`, repoRoot, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MemoryRecord
+	for rows.Next() {
+		var m domain.MemoryRecord
+		var appliedAt, lessons, rules, bugs, tests, files, risks string
+		if err := rows.Scan(&m.TaskID, &m.RepoRoot, &m.SourcePath, &appliedAt, &lessons, &rules, &bugs, &tests, &files, &risks); err != nil {
+			return nil, err
+		}
+		m.AppliedAt, _ = time.Parse(time.RFC3339, appliedAt)
+		_ = json.Unmarshal([]byte(lessons), &m.LessonsLearned)
+		_ = json.Unmarshal([]byte(rules), &m.SuggestedRules)
+		_ = json.Unmarshal([]byte(bugs), &m.RelatedBugs)
+		_ = json.Unmarshal([]byte(tests), &m.TestsAdded)
+		_ = json.Unmarshal([]byte(files), &m.FilesModified)
+		_ = json.Unmarshal([]byte(risks), &m.RisksDetected)
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) Close() error {

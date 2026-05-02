@@ -38,6 +38,18 @@ Windows PowerShell:
 iwr https://raw.githubusercontent.com/NanoCycles/agent-brain/main/scripts/install.ps1 -UseB | iex
 ```
 
+Windows with Chocolatey:
+
+```powershell
+iwr https://raw.githubusercontent.com/NanoCycles/agent-brain/main/scripts/install-choco.ps1 -UseB | iex
+```
+
+After the Chocolatey community package is approved, installation becomes:
+
+```powershell
+choco install agent-brain -y
+```
+
 ## Quickstart
 
 ```sh
@@ -147,7 +159,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow runs tests and publishes Linux, macOS, and Windows archives plus checksums. Users can install with `go install`, the release archives, or the scripts in `scripts/`.
+The release workflow runs tests and publishes Linux, macOS, Windows archives, checksums, installer scripts, and a Chocolatey `.nupkg`. If the repository secret `CHOCOLATEY_API_KEY` is configured, the workflow also pushes the package to the Chocolatey Community Repository.
 
 ## Roadmap
 

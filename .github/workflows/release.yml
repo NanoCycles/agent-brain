@@ -35,6 +35,40 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer scripts
-        run: gh release upload "${GITHUB_REF_NAME}" scripts/install.sh scripts/install.ps1 --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" scripts/install.sh scripts/install.ps1 scripts/install-choco.ps1 --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  chocolatey:
+    needs: goreleaser
+    runs-on: windows-latest
+    env:
+      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/checksums.txt" -OutFile "dist/checksums.txt"
+
+      - name: Build Chocolatey package
+        shell: pwsh
+        run: ./scripts/build-chocolatey.ps1 -Version "${{ github.ref_name }}" -ChecksumsPath "dist/checksums.txt"
+
+      - name: Upload Chocolatey package to release
+        shell: pwsh
+        run: |
+          $nupkg = (Get-ChildItem "dist/chocolatey/agent-brain/*.nupkg" | Select-Object -First 1).FullName
+          gh release upload "${env:GITHUB_REF_NAME}" $nupkg --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Chocolatey package
+        if: ${{ env.CHOCOLATEY_API_KEY != '' }}
+        shell: pwsh
+        run: |
+          $nupkg = (Get-ChildItem "dist/chocolatey/agent-brain/*.nupkg" | Select-Object -First 1).FullName
+          choco push $nupkg --source https://push.chocolatey.org/ --api-key "${env:CHOCOLATEY_API_KEY}"

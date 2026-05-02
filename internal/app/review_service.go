@@ -97,6 +97,7 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 	if err != nil {
 		return ReviewReport{}, "", err
 	}
+	addedByFile, _ := addedLinesByFile(ctx, repoRoot)
 	var findings []domain.Finding
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -110,7 +111,7 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "Forbidden file modified", Message: "Diff includes a path that agent-brain treats as secret or unsafe.", Path: path})
 		}
 		findings = append(findings, contractDiffFindings(repoRoot, path)...)
-		findings = append(findings, enterpriseDiffFindings(repoRoot, path)...)
+		findings = append(findings, enterpriseDiffFindings(repoRoot, path, addedByFile[filepath.ToSlash(path)])...)
 	}
 	hasTests := false
 	for _, f := range files {
@@ -132,32 +133,72 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings), nil
 }
 
-func enterpriseDiffFindings(repoRoot, path string) []domain.Finding {
+func addedLinesByFile(ctx context.Context, repoRoot string) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "diff", "--unified=0", "--no-ext-diff")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]string{}
+	var current string
+	var added []string
+	flush := func() {
+		if current != "" {
+			result[current] = strings.Join(added, "\n")
+		}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			flush()
+			current = ""
+			added = nil
+			continue
+		}
+		if strings.HasPrefix(line, "+++ b/") {
+			current = strings.TrimPrefix(line, "+++ b/")
+			continue
+		}
+		if current == "" || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		if strings.HasPrefix(line, "+") {
+			added = append(added, strings.TrimPrefix(line, "+"))
+		}
+	}
+	flush()
+	return result, nil
+}
+
+func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
 	p := filepath.ToSlash(strings.ToLower(path))
+	if strings.TrimSpace(addedText) == "" {
+		return nil
+	}
 	data, err := os.ReadFile(filepath.Join(repoRoot, path))
 	if err != nil {
 		return nil
 	}
-	text := strings.ToLower(string(data))
+	fullText := strings.ToLower(string(data))
+	text := strings.ToLower(addedText)
 	var findings []domain.Finding
 	if strings.HasSuffix(p, ".go") && (strings.Contains(text, "fmt.println(") || strings.Contains(text, "println(")) {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Debug print in production path", Message: "Review protocol blocks fmt.Println/println debug output in production code paths. Use structured logging if needed.", Path: path})
 	}
 	if strings.Contains(p, "graphql") {
-		if mentionsGraphQLRelations(text) && !strings.Contains(text, "dataloader") && !strings.Contains(text, "batch") {
+		if mentionsGraphQLRelations(text) && !strings.Contains(fullText, "dataloader") && !strings.Contains(fullText, "batch") {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "GraphQL relation batching not evident", Message: "GraphQL relation code appears to lack DataLoader/batched fetching evidence; external review may block N+1 risk.", Path: path})
 		}
-		if strings.Contains(text, "subscription") && strings.Contains(text, "tenant") && !strings.Contains(text, "auth") {
+		if strings.Contains(text, "subscription") && strings.Contains(text, "tenant") && !strings.Contains(fullText, "auth") {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "Subscription tenant/auth revalidation unclear", Message: "Subscription code references tenant behavior without visible auth revalidation.", Path: path})
 		}
-		if strings.Contains(text, "websocket") && !strings.Contains(text, "connection_init") && !strings.Contains(text, "auth") {
+		if strings.Contains(text, "websocket") && !strings.Contains(fullText, "connection_init") && !strings.Contains(fullText, "auth") {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "WebSocket auth handshake unclear", Message: "GraphQL WebSocket code should validate connection_init/auth before operations.", Path: path})
 		}
 	}
-	if touchesCachePathOrText(p, text) && (strings.Contains(text, "tenant") || strings.Contains(text, "project")) && !cacheKeyLooksScoped(text) {
+	if touchesCachePathOrText(p, text) && (strings.Contains(text, "tenant") || strings.Contains(text, "project")) && !cacheKeyLooksScoped(fullText) {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Cache key tenant scope unclear", Message: "Cache changes for tenant/project data should make tenant/project scope visible in the cache key.", Path: path})
 	}
-	if touchesAuditPathOrText(p, text) && !strings.Contains(text, "transaction") && !strings.Contains(text, "tx.") {
+	if touchesAuditPathOrText(p, text) && !strings.Contains(fullText, "transaction") && !strings.Contains(fullText, "tx.") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Audit transactional consistency unclear", Message: "Audit changes should show how audit writes stay consistent with the data write.", Path: path})
 	}
 	if strings.Contains(text, "context.todo()") || strings.Contains(text, "context.background()") {

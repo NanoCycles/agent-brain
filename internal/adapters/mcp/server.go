@@ -338,7 +338,7 @@ func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]a
 	).Prepare(ctx, p, cfg, app.PrepareOptions{
 		TaskPath: taskPath,
 		Topic:    topic,
-		Fast:     boolArg(args, "fast"),
+		Fast:     boolArgDefault(args, "fast", true),
 		NoIndex:  boolArg(args, "no_index"),
 		Budget:   stringArg(args, "budget"),
 	})
@@ -520,6 +520,13 @@ func boolArg(args map[string]any, key string) bool {
 		return v
 	}
 	return false
+}
+
+func boolArgDefault(args map[string]any, key string, fallback bool) bool {
+	if v, ok := args[key].(bool); ok {
+		return v
+	}
+	return fallback
 }
 
 func yesNo(v bool) string {

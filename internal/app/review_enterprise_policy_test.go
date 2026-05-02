@@ -53,7 +53,7 @@ func Run() {
 		t.Fatal(err)
 	}
 
-	findings := enterpriseDiffFindings(root, path)
+	findings := enterpriseDiffFindings(root, path, "fmt.Println(\"debug\")\n_ = context.TODO()")
 	var joined []string
 	for _, finding := range findings {
 		joined = append(joined, finding.Title)
@@ -64,6 +64,35 @@ func Run() {
 	}
 	if !strings.Contains(got, "Context propagation") {
 		t.Fatalf("expected context finding, got %#v", findings)
+	}
+}
+
+func TestEnterpriseDiffFindingsIgnoresPreExistingFullFileRisk(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join("internal", "application", "services", "foo.go")
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `package services
+
+import "context"
+
+func Existing() {
+	_ = context.TODO()
+}
+
+func Changed() string {
+	return "safe"
+}
+`
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := enterpriseDiffFindings(root, path, `return "safe"`)
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for pre-existing full-file risk, got %#v", findings)
 	}
 }
 

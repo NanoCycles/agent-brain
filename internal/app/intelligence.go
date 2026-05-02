@@ -218,6 +218,9 @@ func RankFileCandidates(ctx context.Context, repoRoot string, files []domain.Ind
 			c.Score += 30
 			c.Evidence = append(c.Evidence, "limited file content contains technical phrase")
 		}
+		if analysis.MainCapability == "graphql" && hasTopic(analysis, "nested count") {
+			applyGraphQLNestedCountSpecificity(&c, path, hay)
+		}
 		for _, rc := range ruleCaps {
 			if containsCapability(hay, rc) {
 				c.Score += 20
@@ -263,6 +266,9 @@ func RankFileCandidates(ctx context.Context, repoRoot string, files []domain.Ind
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].Category != out[j].Category && abs(out[i].Score-out[j].Score) <= 50 {
+			return candidateCategoryRank(out[i].Category) < candidateCategoryRank(out[j].Category)
+		}
 		if out[i].Score == out[j].Score {
 			return out[i].Path < out[j].Path
 		}
@@ -272,6 +278,54 @@ func RankFileCandidates(ctx context.Context, repoRoot string, files []domain.Ind
 		out = out[:8]
 	}
 	return out
+}
+
+func candidateCategoryRank(category string) int {
+	switch category {
+	case "primary_candidate":
+		return 0
+	case "related_test":
+		return 1
+	case "supporting_infrastructure":
+		return 2
+	case "low_confidence":
+		return 3
+	case "repo_tooling":
+		return 4
+	default:
+		return 5
+	}
+}
+
+func applyGraphQLNestedCountSpecificity(c *domain.FileCandidate, path, hay string) {
+	specificTerms := []string{"nested_args", "nestedargs", "relationship", "relationships", "relation", "batch", "resolver", "count"}
+	matches := 0
+	for _, term := range specificTerms {
+		if strings.Contains(path, term) || strings.Contains(hay, term) {
+			matches++
+		}
+	}
+	if matches >= 2 {
+		c.Score += 70
+		c.Evidence = append(c.Evidence, "strong GraphQL nested-count specific path/symbol match")
+		c.MatchedTopics = appendUnique(c.MatchedTopics, "nested count")
+	}
+	if strings.Contains(path, "relationships.go") || strings.Contains(path, "relationship.go") {
+		c.Score += 45
+		c.Evidence = append(c.Evidence, "relationship transformer is likely relevant to nested count")
+	}
+	if strings.Contains(path, "schema.go") && !hasSchemaChangeSignal(hay) {
+		c.Score -= 70
+		c.Evidence = append(c.Evidence, "generic schema support; lower priority unless schema changes")
+	}
+	if strings.Contains(path, "test_helpers") || strings.Contains(path, "helper") {
+		c.Score -= 55
+		c.Evidence = append(c.Evidence, "test/helper support file; inspect after implementation and direct tests")
+	}
+}
+
+func hasSchemaChangeSignal(text string) bool {
+	return strings.Contains(text, "schema change") || strings.Contains(text, "schema.graphql") || strings.Contains(text, "gqlgen")
 }
 
 func ComputeContextQuality(analysis domain.TaskAnalysis, caps domain.RepoCapabilities, candidates []domain.FileCandidate, rules domain.RuleGroups, graphStatsKnown bool) domain.ContextQuality {
@@ -959,4 +1013,11 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

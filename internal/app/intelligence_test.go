@@ -143,6 +143,45 @@ func TestFileRankingPrioritizesRelatedTests(t *testing.T) {
 	}
 }
 
+func TestFileRankingPrioritizesNestedCountSpecificFilesOverSchemaHelpers(t *testing.T) {
+	root := t.TempDir()
+	files := []domain.IndexedFile{
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "nested_args_batch.go"), Package: "transformers", Layer: "adapter_graphql", Functions: []domain.Function{{Name: "wrapPreloadedInverseListResult"}}},
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "relationships.go"), Package: "transformers", Layer: "adapter_graphql", Functions: []domain.Function{{Name: "BuildRelationship"}}},
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "schema.go"), Package: "transformers", Layer: "adapter_graphql", Functions: []domain.Function{{Name: "BuildSchema"}}},
+		{Path: filepath.Join("internal", "application", "services", "schema", "test_helpers.go"), Package: "schema", Layer: "application", Functions: []domain.Function{{Name: "NewTestSchema"}}},
+	}
+	analysis := AnalyzeTask(domain.Task{ID: "impact", Content: enrichImpactText("graphql nested count")})
+	caps := DetectRepoCapabilities(root, files)
+	candidates := RankFileCandidates(context.Background(), root, files, analysis, caps, nil)
+	if len(candidates) < 2 {
+		t.Fatalf("expected candidates: %#v", candidates)
+	}
+	top := strings.Join([]string{candidates[0].Path, candidates[1].Path}, "\n")
+	if !strings.Contains(top, "nested_args_batch.go") || !strings.Contains(top, "relationships.go") {
+		t.Fatalf("expected nested count specific files at top, got %#v", candidates)
+	}
+	for i, c := range candidates {
+		if i < 2 && (strings.Contains(c.Path, "schema.go") || strings.Contains(c.Path, "test_helpers")) {
+			t.Fatalf("generic file ranked too high: %#v", candidates)
+		}
+	}
+}
+
+func TestImpactTextProducesHighQualityForGraphQLNestedCount(t *testing.T) {
+	root := t.TempDir()
+	files := []domain.IndexedFile{
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "nested_args_batch.go"), Package: "transformers", Layer: "adapter_graphql", Functions: []domain.Function{{Name: "wrapPreloadedInverseListResult"}}},
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "relationships.go"), Package: "transformers", Layer: "adapter_graphql", Functions: []domain.Function{{Name: "BuildRelationship"}}},
+		{Path: filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "nested_args_batch_test.go"), Package: "transformers", Layer: "adapter_graphql", Tests: []domain.Test{{Name: "TestNestedCountNotNull"}}},
+	}
+	task := AnalyzeTextAsTask("impact", enrichImpactText("graphql nested count"))
+	pack := BuildContextPack(context.Background(), root, files, task, flattenDefaultRules(), true)
+	if pack.ContextQuality.Level == "low" {
+		t.Fatalf("expected medium/high impact quality, got %#v", pack.ContextQuality)
+	}
+}
+
 func TestContextQualityLowWhenDomainMissing(t *testing.T) {
 	analysis := AnalyzeTask(domain.Task{ID: "BUG-001", Content: "GraphQL nested count returns null"})
 	q := ComputeContextQuality(analysis, domain.RepoCapabilities{MainLanguage: "go"}, nil, domain.RuleGroups{}, false)

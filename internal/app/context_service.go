@@ -38,7 +38,7 @@ func (s *ContextService) Generate(ctx context.Context, repoRoot, taskPath, rules
 }
 
 func (s *ContextService) GenerateForText(ctx context.Context, repoRoot, id, text, rulesDir string) (domain.ContextPack, error) {
-	task := AnalyzeTextAsTask(id, text)
+	task := AnalyzeTextAsTask(id, enrichImpactText(text))
 	pack, _, _, err := s.generateForTask(ctx, repoRoot, task, rulesDir, "", false)
 	return pack, err
 }
@@ -389,4 +389,25 @@ func graphNodeFilePath(n domain.GraphNode) string {
 		return path
 	}
 	return ""
+}
+
+func enrichImpactText(text string) string {
+	lower := strings.ToLower(text)
+	var hints []string
+	if strings.Contains(lower, "graphql") {
+		hints = append(hints, "GraphQL public contract resolver schema relationship adapter")
+	}
+	if strings.Contains(lower, "nested") || strings.Contains(lower, "count") {
+		hints = append(hints, "nested count null relationship resolver batch regression test")
+	}
+	if strings.Contains(lower, "event") {
+		hints = append(hints, "event consumer producer idempotency duplicate delivery")
+	}
+	if strings.Contains(lower, "auth") || strings.Contains(lower, "tenant") || strings.Contains(lower, "permission") {
+		hints = append(hints, "authorization tenant project isolation security negative test")
+	}
+	if len(hints) == 0 {
+		return text
+	}
+	return text + "\n" + strings.Join(hints, "\n")
 }

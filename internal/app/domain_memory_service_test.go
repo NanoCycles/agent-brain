@@ -32,3 +32,17 @@ func TestRenderDomainMemoryFiltersRelevantTopic(t *testing.T) {
 		t.Fatalf("unexpected unrelated memory, got %s", got)
 	}
 }
+
+func TestRenderDomainMemoryKeepsLegacyAreaBlank(t *testing.T) {
+	memory := domain.DomainMemory{
+		GeneratedAt: time.Now(),
+		BusinessRules: []domain.BusinessRule{
+			{Name: "Nested relationship count semantics", Statement: "Nested relationship counts must not become null.", Evidence: []string{"nested_args_batch_test.go"}, Confidence: 0.8},
+		},
+	}
+
+	got := RenderDomainMemory(memory, "graphql nested count", "graphql", 8)
+	if !strings.Contains(got, "Nested relationship count semantics") {
+		t.Fatalf("expected legacy area-less memory to match filtered area, got %s", got)
+	}
+}

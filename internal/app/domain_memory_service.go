@@ -359,6 +359,9 @@ func matchesMemoryArea(filter, area string) bool {
 	if filter == "" || filter == "all" {
 		return true
 	}
+	if strings.TrimSpace(area) == "" {
+		return true
+	}
 	return strings.EqualFold(filter, area)
 }
 

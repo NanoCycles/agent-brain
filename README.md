@@ -29,10 +29,7 @@ make build
 ## Quickstart
 
 ```sh
-agent-brain init
-agent-brain up
-agent-brain index --repo .
-agent-brain context --task .ai/tasks/TICKET.md
+agent-brain prepare --task .ai/tasks/TICKET.md
 ```
 
 Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized repository gets its own `project_id`, Docker Compose project, Neo4j container, persistent volume, and SQLite database under `.agent-brain/runtime/`, so local projects do not share graph or metadata state. Check the exact HTTP/Bolt ports with `agent-brain status`.
@@ -40,9 +37,8 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 ## Flow With Codex/Cursor
 
 1. Create a task in `.ai/tasks/TICKET.md`.
-2. Run `agent-brain index --repo .`.
-3. Run `agent-brain context --task .ai/tasks/TICKET.md`.
-4. Ask the agent to read `.ai/context/<TASK_ID>.agent.md` before editing.
+2. Run `agent-brain prepare --task .ai/tasks/TICKET.md`.
+3. Ask the agent to read `.ai/context/<TASK_ID>.agent.md` before editing, or paste the prompt printed by `agent-brain prepare`.
 5. After implementation, run `agent-brain review-diff`.
 6. Generate memory with `agent-brain memory-proposal --task .ai/tasks/TICKET.md`.
 
@@ -53,6 +49,11 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 - `agent-brain down`: stops local services without deleting data.
 - `agent-brain destroy --confirm`: removes this project's local Neo4j volume and SQLite metadata without touching source code, config, rules, context, or memory proposals.
 - `agent-brain status`: prints Docker, Neo4j, SQLite, initialization, index, and graph stats.
+- `agent-brain prepare --task .ai/tasks/TICKET.md`: initializes, starts services, indexes, generates context, and prints an agent handoff prompt.
+- `agent-brain prepare --topic "text"`: creates a lightweight task from topic text and prepares context.
+- `agent-brain prepare --fast`: skips reindexing when the last index is recent.
+- `agent-brain prepare --no-index`: generates context from current metadata without indexing.
+- `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
 - `agent-brain impact --topic "text"`: searches graph impact.

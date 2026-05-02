@@ -22,7 +22,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), prepareCmd(ctx), handoffCmd(), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd())
 	return root
 }
 
@@ -176,6 +176,78 @@ func statusCmd(ctx context.Context) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func prepareCmd(ctx context.Context) *cobra.Command {
+	var task, topic string
+	var fast, noIndex bool
+	c := &cobra.Command{
+		Use:   "prepare",
+		Short: "Initialize, start services, index, and generate an agent context pack",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
+				return err
+			}
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			result, err := app.NewPrepareService(
+				app.NewInitService(filesystem.LocalFS{}),
+				dockerruntime.Runtime{},
+				golang.Indexer{},
+				store,
+				graph,
+			).Prepare(ctx, p, cfg, app.PrepareOptions{TaskPath: task, Topic: topic, Fast: fast, NoIndex: noIndex})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Agent context ready: %s\nJSON: %s\nQuality: %s %.2f\nIndexed: %s\nRuntime started: %s\nTop files: %d\n\nSuggested prompt:\n%s\n",
+				result.MarkdownPath, result.JSONPath, result.Pack.ContextQuality.Level, result.Pack.ContextQuality.Score, yesNo(result.Indexed), yesNo(result.RuntimeUp), len(result.Pack.LikelyRelevantFiles), result.Handoff)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&topic, "topic", "", "topic text")
+	c.Flags().BoolVar(&fast, "fast", false, "skip reindex if the last index is recent")
+	c.Flags().BoolVar(&noIndex, "no-index", false, "do not index before generating context")
+	return c
+}
+
+func handoffCmd() *cobra.Command {
+	var task, contextPath string
+	c := &cobra.Command{
+		Use:   "handoff",
+		Short: "Print a prompt for Codex/Cursor/Claude to use an agent context pack",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if contextPath == "" {
+				if task == "" {
+					return fmt.Errorf("--task or --context is required")
+				}
+				p, err := paths.Discover(".")
+				if err != nil {
+					return err
+				}
+				taskID := app.TaskIDFromPath(task)
+				contextPath = filepath.Join(p.AIContextDir, taskID+".agent.md")
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), app.HandoffPrompt(contextPath))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&contextPath, "context", "", "context pack markdown path")
+	return c
 }
 
 func indexCmd(ctx context.Context) *cobra.Command {

@@ -128,10 +128,20 @@ func contractDiffFindings(repoRoot, path string) []domain.Finding {
 	if strings.Contains(text, "handlefunc(") || strings.Contains(text, ".get(") || strings.Contains(text, ".post(") || strings.Contains(text, ".put(") || strings.Contains(text, ".patch(") || strings.Contains(text, ".delete(") {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "REST route registration modified", Message: "Diff appears to touch REST route registration. Verify public route contract and integration tests.", Path: path})
 	}
-	if strings.Contains(text, "type ") && (strings.Contains(text, "event") || strings.Contains(text, "consumer") || strings.Contains(text, "producer")) {
+	if looksLikeEventContractPath(p) && strings.Contains(text, "type ") {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "Event contract area modified", Message: "Diff appears to touch event consumer/producer types. Verify idempotency, duplicate delivery, and payload safety.", Path: path})
 	}
 	return findings
+}
+
+func looksLikeEventContractPath(path string) bool {
+	return strings.Contains(path, "/event") ||
+		strings.Contains(path, "/events") ||
+		strings.Contains(path, "/consumer") ||
+		strings.Contains(path, "/producer") ||
+		strings.Contains(path, "/kafka") ||
+		strings.Contains(path, "/pubsub") ||
+		strings.Contains(path, "/broker")
 }
 
 func renderDiffSummary(files []string, findings []domain.Finding) string {

@@ -141,6 +141,7 @@ func toolDefinitions() []map[string]any {
 		tool("prepare_context", "Initialize local runtime if needed, index the current repo unless skipped, generate an agent context pack, and return a compact handoff. Safe: does not modify source code.", map[string]any{
 			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
 			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"budget":    map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
 			"fast":      map[string]any{"type": "boolean", "description": "Skip reindex if the last index is recent"},
 			"no_index":  map[string]any{"type": "boolean", "description": "Generate context from existing metadata without indexing"},
 		}),
@@ -149,7 +150,8 @@ func toolDefinitions() []map[string]any {
 			"context_path": map[string]any{"type": "string"},
 		}),
 		tool("impact", "Analyze likely impact for a topic using SQLite metadata and Neo4j graph expansion.", map[string]any{
-			"topic": map[string]any{"type": "string"},
+			"topic":  map[string]any{"type": "string"},
+			"budget": map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
 		}),
 		tool("review_diff", "Review current git diff for risks, contracts, tests, forbidden files, and rule violations. Read-only.", map[string]any{}),
 		tool("status", "Return project runtime, graph, SQLite, and capability status.", map[string]any{}),
@@ -185,7 +187,7 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	case "get_context_pack":
 		return getContextPack(p, args)
 	case "impact":
-		return impact(ctx, p, stringArg(args, "topic"))
+		return impact(ctx, p, stringArg(args, "topic"), stringArg(args, "budget"))
 	case "review_diff":
 		report, summary, err := app.NewReviewService().ReviewDiff(ctx, p.Root, p.RulesDir)
 		if err != nil {
@@ -252,6 +254,7 @@ func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]a
 		Topic:    topic,
 		Fast:     boolArg(args, "fast"),
 		NoIndex:  boolArg(args, "no_index"),
+		Budget:   stringArg(args, "budget"),
 	})
 	if err != nil {
 		return "", err
@@ -272,7 +275,7 @@ func getContextPack(p paths.ProjectPaths, args map[string]any) (string, error) {
 	return string(data), nil
 }
 
-func impact(ctx context.Context, p paths.ProjectPaths, topic string) (string, error) {
+func impact(ctx context.Context, p paths.ProjectPaths, topic, budget string) (string, error) {
 	if topic == "" {
 		return "", fmt.Errorf("topic is required")
 	}
@@ -286,7 +289,7 @@ func impact(ctx context.Context, p paths.ProjectPaths, topic string) (string, er
 	if graph != nil {
 		defer graph.Close(ctx)
 	}
-	pack, err := app.NewContextService(store, graph).GenerateForText(ctx, p.Root, "impact", topic, p.RulesDir)
+	pack, err := app.NewContextServiceWithBudget(store, graph, budget).GenerateForText(ctx, p.Root, "impact", topic, p.RulesDir)
 	if err != nil {
 		return "", err
 	}

@@ -181,6 +181,7 @@ func statusCmd(ctx context.Context) *cobra.Command {
 
 func prepareCmd(ctx context.Context) *cobra.Command {
 	var task, topic string
+	var budget string
 	var fast, noIndex bool
 	c := &cobra.Command{
 		Use:   "prepare",
@@ -209,7 +210,7 @@ func prepareCmd(ctx context.Context) *cobra.Command {
 				golang.Indexer{},
 				store,
 				graph,
-			).Prepare(ctx, p, cfg, app.PrepareOptions{TaskPath: task, Topic: topic, Fast: fast, NoIndex: noIndex})
+			).Prepare(ctx, p, cfg, app.PrepareOptions{TaskPath: task, Topic: topic, Fast: fast, NoIndex: noIndex, Budget: budget})
 			if err != nil {
 				return err
 			}
@@ -220,6 +221,7 @@ func prepareCmd(ctx context.Context) *cobra.Command {
 	}
 	c.Flags().StringVar(&task, "task", "", "task markdown path")
 	c.Flags().StringVar(&topic, "topic", "", "topic text")
+	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
 	c.Flags().BoolVar(&fast, "fast", false, "skip reindex if the last index is recent")
 	c.Flags().BoolVar(&noIndex, "no-index", false, "do not index before generating context")
 	return c
@@ -305,6 +307,7 @@ func indexCmd(ctx context.Context) *cobra.Command {
 
 func contextCmd(ctx context.Context) *cobra.Command {
 	var task string
+	var budget string
 	c := &cobra.Command{
 		Use:   "context",
 		Short: "Generate compact agent context pack",
@@ -322,7 +325,7 @@ func contextCmd(ctx context.Context) *cobra.Command {
 			}
 			defer store.Close()
 			_ = store.Init(ctx)
-			pack, md, js, err := app.NewContextService(store, graphOrNil(p.ConfigPath)).Generate(ctx, p.Root, task, p.RulesDir, p.AIContextDir)
+			pack, md, js, err := app.NewContextServiceWithBudget(store, graphOrNil(p.ConfigPath), budget).Generate(ctx, p.Root, task, p.RulesDir, p.AIContextDir)
 			if err != nil {
 				return err
 			}
@@ -331,11 +334,13 @@ func contextCmd(ctx context.Context) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
 	return c
 }
 
 func impactCmd(ctx context.Context) *cobra.Command {
 	var topic string
+	var budget string
 	c := &cobra.Command{
 		Use:   "impact",
 		Short: "Search graph impact for a topic",
@@ -354,7 +359,7 @@ func impactCmd(ctx context.Context) *cobra.Command {
 			if graph != nil {
 				defer graph.Close(ctx)
 			}
-			pack, err := app.NewContextService(store, graph).GenerateForText(ctx, p.Root, "impact", topic, p.RulesDir)
+			pack, err := app.NewContextServiceWithBudget(store, graph, budget).GenerateForText(ctx, p.Root, "impact", topic, p.RulesDir)
 			if err != nil {
 				return err
 			}
@@ -380,6 +385,7 @@ func impactCmd(ctx context.Context) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&topic, "topic", "", "topic text")
+	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
 	return c
 }
 

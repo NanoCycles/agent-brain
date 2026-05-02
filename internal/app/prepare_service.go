@@ -18,6 +18,7 @@ type PrepareOptions struct {
 	Topic    string
 	Fast     bool
 	NoIndex  bool
+	Budget   string
 }
 
 type PrepareResult struct {
@@ -74,7 +75,7 @@ func (s *PrepareService) Prepare(ctx context.Context, p paths.ProjectPaths, cfg 
 		}
 		result.Indexed = true
 	}
-	contextService := NewContextService(s.meta, s.graph)
+	contextService := NewContextServiceWithBudget(s.meta, s.graph, opts.Budget)
 	if opts.TaskPath != "" {
 		pack, md, js, err := contextService.Generate(ctx, p.Root, opts.TaskPath, p.RulesDir, p.AIContextDir)
 		if err != nil {

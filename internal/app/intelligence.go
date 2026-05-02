@@ -495,7 +495,7 @@ func BuildContextPack(ctx context.Context, repoRoot string, metaFiles []domain.I
 	risks := BuildRisks(analysis)
 	tests := SuggestTests(analysis)
 	return domain.ContextPack{
-		TaskID: task.ID, GeneratedAt: time.Now().UTC(), AgentBudget: domain.AgentBudget{OpenTopFilesFirst: min(3, len(candidates)), ExplorationMode: quality.Level, TokenMode: "compact"},
+		TaskID: task.ID, GeneratedAt: time.Now().UTC(), AgentBudget: domain.AgentBudget{OpenTopFilesFirst: min(2, len(candidates)), ExplorationMode: "minimal", TokenMode: BudgetCavernicola},
 		TaskSummary: summarize(task.Content), TaskAnalysis: analysis, ContextQuality: quality, RepositoryCapabilities: caps,
 		DetectedTopics: topicNames(analysis.TechnicalTopics), DetectedTechnicalTopics: analysis.TechnicalTopics,
 		RelevantArchitectureRules: ruleGroups.Architecture, RelevantBusinessTechnicalRules: append(append(ruleGroups.Contracts, ruleGroups.Security...), ruleGroups.Testing...),

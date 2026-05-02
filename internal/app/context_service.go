@@ -18,10 +18,15 @@ type ContextService struct {
 	meta       ports.MetadataStore
 	graph      ports.GraphStore
 	ruleLoader rules.Loader
+	budget     string
 }
 
 func NewContextService(meta ports.MetadataStore, graph ports.GraphStore) *ContextService {
-	return &ContextService{meta: meta, graph: graph, ruleLoader: rules.Loader{}}
+	return NewContextServiceWithBudget(meta, graph, BudgetCavernicola)
+}
+
+func NewContextServiceWithBudget(meta ports.MetadataStore, graph ports.GraphStore, budget string) *ContextService {
+	return &ContextService{meta: meta, graph: graph, ruleLoader: rules.Loader{}, budget: NormalizeBudget(budget)}
 }
 
 func (s *ContextService) Generate(ctx context.Context, repoRoot, taskPath, rulesDir, outputDir string) (domain.ContextPack, string, string, error) {
@@ -59,7 +64,7 @@ func (s *ContextService) generateForTask(ctx context.Context, repoRoot string, t
 	if pack.ContextQuality.Level != "low" || capabilityExists(pack.TaskAnalysis.MainCapability, pack.RepositoryCapabilities) {
 		pack.LikelyRelevantFiles = mergeGraphImpactCandidates(pack.LikelyRelevantFiles, graphNodes)
 	}
-	pack.AgentBudget.OpenTopFilesFirst = min(3, len(pack.LikelyRelevantFiles))
+	ApplyBudget(&pack, s.budget)
 	if !writeFiles {
 		return pack, "", "", nil
 	}
@@ -117,6 +122,9 @@ func TaskIDFromPath(path string) string {
 }
 
 func RenderMarkdown(p domain.ContextPack) string {
+	if NormalizeBudget(p.AgentBudget.TokenMode) == BudgetCavernicola {
+		return RenderMarkdownCavernicola(p)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent Context Pack\n\n")
 	fmt.Fprintf(&b, "## Context Quality\nLevel: %s\nScore: %.2f\n", p.ContextQuality.Level, p.ContextQuality.Score)
@@ -138,6 +146,80 @@ func RenderMarkdown(p domain.ContextPack) string {
 	writeList(&b, "Recommended Strategy", p.RecommendedStrategy)
 	writeList(&b, "Recommended Agent Instructions", p.RecommendedAgentInstructions)
 	return b.String()
+}
+
+func RenderMarkdownCavernicola(p domain.ContextPack) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Agent Context Pack\n\n")
+	b.WriteString("## Context Quality\n")
+	fmt.Fprintf(&b, "Quality: %s %.2f\n", p.ContextQuality.Level, p.ContextQuality.Score)
+	if len(p.ContextQuality.Warnings) > 0 {
+		fmt.Fprintf(&b, "Warnings: %s\n", strings.Join(p.ContextQuality.Warnings, "; "))
+	}
+	fmt.Fprintf(&b, "Task: %s / %s / impact=%s\n", p.TaskAnalysis.Type, p.TaskAnalysis.MainCapability, strings.Join(p.PublicContractImpact, ","))
+	fmt.Fprintf(&b, "Layers: %s\n", strings.Join(p.LikelyAffectedLayers, ", "))
+	fmt.Fprintf(&b, "Topics: %s\n\n", strings.Join(p.DetectedTopics, ", "))
+	b.WriteString("## Files\n")
+	if len(p.LikelyRelevantFiles) == 0 {
+		b.WriteString("- No strong relevant files detected.\n")
+	} else {
+		for i, c := range p.LikelyRelevantFiles {
+			fmt.Fprintf(&b, "%d. %s [%.2f/%s] %s\n", i+1, c.Path, c.Confidence, c.Category, c.Reason)
+			if len(c.Evidence) > 0 {
+				fmt.Fprintf(&b, "   Evidence: %s\n", strings.Join(firstN(c.Evidence, 2), "; "))
+			}
+		}
+	}
+	b.WriteString("\n## Rules\n")
+	writeRuleNames(&b, "Architecture", p.RelevantRules.Architecture)
+	writeRuleNames(&b, "Contracts", p.RelevantRules.Contracts)
+	writeRuleNames(&b, "Security", p.RelevantRules.Security)
+	writeRuleNames(&b, "Testing", p.RelevantRules.Testing)
+	b.WriteString("\n## Risks\n")
+	writeCompactList(&b, append(append(p.Risks.Security, p.Risks.Concurrency...), p.Risks.MemoryPerformance...), 6)
+	b.WriteString("\n## Tests\n")
+	writeCompactList(&b, p.SuggestedTests, 6)
+	b.WriteString("\n## Strategy\n")
+	writeCompactList(&b, p.RecommendedStrategy, 6)
+	b.WriteString("\n## Agent Instructions\n")
+	writeCompactList(&b, p.RecommendedAgentInstructions, 4)
+	fmt.Fprintf(&b, "\nNext: %s\n", p.ContextQuality.RecommendedNextAction)
+	return b.String()
+}
+
+func writeRuleNames(b *strings.Builder, title string, rs []domain.Rule) {
+	if len(rs) == 0 {
+		return
+	}
+	var names []string
+	for _, r := range firstNRules(rs, 4) {
+		names = append(names, r.Title)
+	}
+	fmt.Fprintf(b, "- %s: %s\n", title, strings.Join(names, "; "))
+}
+
+func writeCompactList(b *strings.Builder, xs []string, limit int) {
+	if len(xs) == 0 {
+		b.WriteString("- None detected.\n")
+		return
+	}
+	for _, x := range firstN(xs, limit) {
+		fmt.Fprintf(b, "- %s\n", x)
+	}
+}
+
+func firstN(xs []string, limit int) []string {
+	if len(xs) <= limit {
+		return xs
+	}
+	return xs[:limit]
+}
+
+func firstNRules(xs []domain.Rule, limit int) []domain.Rule {
+	if len(xs) <= limit {
+		return xs
+	}
+	return xs[:limit]
 }
 
 func writeCapabilities(b *strings.Builder, caps domain.RepoCapabilities) {

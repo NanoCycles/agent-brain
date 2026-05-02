@@ -17,13 +17,25 @@ Go is used because it gives `agent-brain` a portable single binary, straightforw
 ## Install
 
 ```sh
-go install github.com/agent-brain/agent-brain/cmd/agent-brain@latest
+go install github.com/NanoCycles/agent-brain/cmd/agent-brain@latest
 ```
 
 From source:
 
 ```sh
 make build
+```
+
+From GitHub Releases:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NanoCycles/agent-brain/main/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/NanoCycles/agent-brain/main/scripts/install.ps1 -UseB | iex
 ```
 
 ## Quickstart
@@ -33,6 +45,8 @@ agent-brain prepare --task .ai/tasks/TICKET.md
 ```
 
 Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized repository gets its own `project_id`, Docker Compose project, Neo4j container, persistent volume, and SQLite database under `.agent-brain/runtime/`, so local projects do not share graph or metadata state. Check the exact HTTP/Bolt ports with `agent-brain status`.
+
+The default context budget is `cavernicola`: minimal tokens, top-ranked files only, compact risks/tests/strategy, and no long prose. Use `--budget standard` or `--budget deep` only when the agent truly needs more context.
 
 ## Flow With Codex/Cursor
 
@@ -74,7 +88,7 @@ On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
 
 Recommended agent flow:
 
-1. Call `prepare_context` with `task_path` or `topic` at the start of a task.
+1. Call `prepare_context` with `task_path` or `topic` at the start of a task. Default `budget` is `cavernicola`.
 2. Read the returned handoff and generated context pack.
 3. Use `impact` for focused follow-up questions.
 4. Use `review_diff` before finalizing changes.
@@ -93,6 +107,7 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain status`: prints Docker, Neo4j, SQLite, initialization, index, and graph stats.
 - `agent-brain prepare --task .ai/tasks/TICKET.md`: initializes, starts services, indexes, generates context, and prints an agent handoff prompt.
 - `agent-brain prepare --topic "text"`: creates a lightweight task from topic text and prepares context.
+- `agent-brain prepare --budget cavernicola|compact|standard|deep`: controls how much context is returned; default is `cavernicola`.
 - `agent-brain prepare --fast`: skips reindexing when the last index is recent.
 - `agent-brain prepare --no-index`: generates context from current metadata without indexing.
 - `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
@@ -113,6 +128,7 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - It does not run commit, push, merge, reset, or destructive git commands.
 - It refuses to index known secret paths such as `.env`, `.env.*`, `*.pem`, `*.key`, `credentials`, `secrets`, `kubeconfig`, `id_rsa`, and `id_ed25519`.
 - It avoids printing sensitive values.
+- The default Neo4j password is for local development only. Do not expose the generated Neo4j ports to untrusted networks.
 
 ## Dependencies
 
@@ -121,6 +137,17 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - neo4j-go-driver: official Neo4j Go driver.
 - golang.org/x/tools/go/packages: typed Go package loading for more accurate call graph and interface implementation analysis.
 - yaml.v3: small YAML parser for local rules and config.
+
+## Publishing Releases
+
+Public binaries are produced with GoReleaser through GitHub Actions.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow runs tests and publishes Linux, macOS, and Windows archives plus checksums. Users can install with `go install`, the release archives, or the scripts in `scripts/`.
 
 ## Roadmap
 

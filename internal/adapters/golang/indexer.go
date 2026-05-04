@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -35,11 +36,18 @@ type typedTarget struct {
 
 func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, error) {
 	goMod := filepath.Join(repoRoot, "go.mod")
-	data, err := os.ReadFile(goMod)
-	if err != nil {
-		return domain.CodeIndex{}, err
+	data, goErr := os.ReadFile(goMod)
+	pkgJSON, nodeErr := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if goErr != nil && nodeErr != nil {
+		return domain.CodeIndex{}, goErr
 	}
-	module := parseModule(data)
+	module := ""
+	if goErr == nil {
+		module = parseModule(data)
+	}
+	if module == "" && nodeErr == nil {
+		module = parsePackageName(pkgJSON)
+	}
 	now := time.Now().UTC()
 	repo := domain.Repository{
 		Name: filepath.Base(repoRoot), Root: repoRoot, GoModule: module,
@@ -49,7 +57,7 @@ func (Indexer) Index(ctx context.Context, repoRoot string) (domain.CodeIndex, er
 	repoNode := domain.GraphNode{Label: "Repository", Name: repo.Name, Path: repo.Root, Repo: repo.Root, CommitSHA: repo.CommitSHA, IndexedAt: now, Source: "agent-brain", Confidence: 1}
 	index.Nodes = append(index.Nodes, repoNode)
 
-	err = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -91,6 +99,8 @@ func parseFile(repoRoot, rel, abs string, repo domain.Repository, now time.Time)
 	switch {
 	case strings.HasSuffix(lower, ".go"):
 		return parseGoFile(repoRoot, rel, abs, repo, now)
+	case isJSFile(lower):
+		return parseJSFile(rel, abs, repo, now)
 	case strings.HasSuffix(lower, ".graphql"), strings.HasSuffix(lower, ".graphqls"):
 		return parseGraphQLSchemaFile(rel, abs, repo, now)
 	case strings.HasSuffix(lower, ".proto"):
@@ -98,6 +108,66 @@ func parseFile(repoRoot, rel, abs string, repo domain.Repository, now time.Time)
 	default:
 		return domain.IndexedFile{}, nil, nil, nil
 	}
+}
+
+func isJSFile(lower string) bool {
+	if strings.Contains(lower, ".d.ts") {
+		return false
+	}
+	return strings.HasSuffix(lower, ".js") || strings.HasSuffix(lower, ".jsx") || strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".tsx") || strings.HasSuffix(lower, ".mjs") || strings.HasSuffix(lower, ".cjs")
+}
+
+func parseJSFile(rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		return domain.IndexedFile{}, nil, nil, err
+	}
+	layer := DetectLayer(rel)
+	pkg := jsPackage(rel)
+	file := domain.IndexedFile{Path: rel, Package: pkg, Layer: layer, Hash: hash(src), IndexedAt: now}
+	text := string(src)
+	file.Imports = jsImports(text)
+	file.Functions = jsFunctions(rel, text)
+	file.Methods = jsMethods(rel, text)
+	file.Structs = jsClasses(rel, text)
+	file.Interfaces = jsInterfaces(rel, text)
+	file.Tests = jsTests(rel, text)
+	if !strings.Contains(strings.ToLower(rel), ".test.") && !strings.Contains(strings.ToLower(rel), ".spec.") {
+		file.Contracts = detectJSContracts(rel, text)
+	}
+	fileNode := node("File", rel, rel, repo, pkg, layer, now)
+	fileNode.Source = "js-ts-regex"
+	pkgNode := node("Package", filepath.Dir(rel), filepath.Dir(rel), repo, pkg, layer, now)
+	layerNode := node("Layer", layer, layer, repo, "", layer, now)
+	nodes := []domain.GraphNode{fileNode, pkgNode, layerNode}
+	rels := []domain.GraphRelationship{
+		relate("Repository", repo.Root, "File", rel, "CONTAINS", repo.Root),
+		relate("Package", filepath.Dir(rel), "File", rel, "CONTAINS", repo.Root),
+		relate("File", rel, "Layer", layer, "BELONGS_TO_LAYER", repo.Root),
+	}
+	for _, fn := range file.Functions {
+		nodes = append(nodes, node("Function", fn.Name, rel+"#"+fn.Name, repo, pkg, layer, now))
+		rels = append(rels, relate("File", rel, "Function", rel+"#"+fn.Name, "DEFINES", repo.Root))
+	}
+	for _, method := range file.Methods {
+		name := method.Receiver + "." + method.Name
+		nodes = append(nodes, node("Method", name, rel+"#"+name, repo, pkg, layer, now))
+		rels = append(rels, relate("File", rel, "Method", rel+"#"+name, "DEFINES", repo.Root))
+	}
+	for _, class := range file.Structs {
+		nodes = append(nodes, node("Struct", class.Name, rel+"#"+class.Name, repo, pkg, layer, now))
+		rels = append(rels, relate("File", rel, "Struct", rel+"#"+class.Name, "DEFINES", repo.Root))
+	}
+	for _, iface := range file.Interfaces {
+		nodes = append(nodes, node("Interface", iface.Name, rel+"#"+iface.Name, repo, pkg, layer, now))
+		rels = append(rels, relate("File", rel, "Interface", rel+"#"+iface.Name, "DEFINES", repo.Root))
+	}
+	for _, test := range file.Tests {
+		nodes = append(nodes, node("Test", test.Name, rel+"#"+test.Name, repo, pkg, layer, now))
+		rels = append(rels, relate("File", rel, "Test", rel+"#"+test.Name, "DEFINES", repo.Root))
+	}
+	appendContractNodes(&nodes, &rels, rel, repo, pkg, layer, now, file.Contracts)
+	return file, nodes, rels, nil
 }
 
 func parseGoFile(repoRoot, rel, abs string, repo domain.Repository, now time.Time) (domain.IndexedFile, []domain.GraphNode, []domain.GraphRelationship, error) {
@@ -221,6 +291,18 @@ func parseProtoFile(rel, abs string, repo domain.Repository, now time.Time) (dom
 func DetectLayer(path string) string {
 	p := filepath.ToSlash(path)
 	switch {
+	case strings.Contains(p, "src/domain"), strings.Contains(p, "domain/"):
+		return "domain"
+	case strings.Contains(p, "src/application"), strings.Contains(p, "src/usecase"), strings.Contains(p, "application/"):
+		return "application"
+	case strings.Contains(p, "src/controllers"), strings.Contains(p, "src/routes"), strings.Contains(p, "src/http"), strings.Contains(p, "routes/"), strings.Contains(p, "controllers/"):
+		return "adapter_rest"
+	case strings.Contains(p, "src/graphql"), strings.Contains(p, "graphql"):
+		return "adapter_graphql"
+	case strings.Contains(p, "src/events"), strings.Contains(p, "events/"), strings.Contains(p, "consumers/"), strings.Contains(p, "producers/"):
+		return "adapter_events"
+	case strings.Contains(p, "src/repositories"), strings.Contains(p, "src/db"), strings.Contains(p, "repositories/"), strings.Contains(p, "prisma"), strings.Contains(p, "typeorm"):
+		return "adapter_persistence"
 	case strings.Contains(p, "internal/domain"):
 		return "domain"
 	case strings.Contains(p, "internal/application"), strings.Contains(p, "internal/usecase"):
@@ -240,6 +322,144 @@ func DetectLayer(path string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func parsePackageName(data []byte) string {
+	var pkg struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(data, &pkg)
+	return pkg.Name
+}
+
+func jsPackage(rel string) string {
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	if dir == "." {
+		return "javascript"
+	}
+	return dir
+}
+
+func jsImports(src string) []string {
+	var out []string
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*import(?:\s+type)?(?:[^'"]*from\s*)?['"]([^'"]+)['"]`),
+		regexp.MustCompile(`require\(\s*['"]([^'"]+)['"]\s*\)`),
+	}
+	for _, re := range patterns {
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			out = appendUniqueString(out, m[1])
+		}
+	}
+	return out
+}
+
+func jsFunctions(rel, src string) []domain.Function {
+	var out []domain.Function
+	res := []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(`),
+		regexp.MustCompile(`(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>`),
+		regexp.MustCompile(`(?m)^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*async\s+function`),
+	}
+	for _, re := range res {
+		for _, m := range re.FindAllStringSubmatchIndex(src, -1) {
+			name := src[m[2]:m[3]]
+			out = append(out, domain.Function{Name: name, Path: rel, Line: lineForIndex(src, m[0])})
+		}
+	}
+	return out
+}
+
+func jsClasses(rel, src string) []domain.Struct {
+	var out []domain.Struct
+	re := regexp.MustCompile(`(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)`)
+	for _, m := range re.FindAllStringSubmatchIndex(src, -1) {
+		out = append(out, domain.Struct{Name: src[m[2]:m[3]], Path: rel, Line: lineForIndex(src, m[0])})
+	}
+	return out
+}
+
+func jsInterfaces(rel, src string) []domain.Interface {
+	var out []domain.Interface
+	re := regexp.MustCompile(`(?m)^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)`)
+	for _, m := range re.FindAllStringSubmatchIndex(src, -1) {
+		out = append(out, domain.Interface{Name: src[m[2]:m[3]], Path: rel, Line: lineForIndex(src, m[0])})
+	}
+	return out
+}
+
+func jsMethods(rel, src string) []domain.Method {
+	var out []domain.Method
+	classRe := regexp.MustCompile(`(?s)(?:export\s+)?class\s+([A-Za-z_$][\w$]*)[^{]*\{(.*?)\n\}`)
+	methodRe := regexp.MustCompile(`(?m)^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	for _, cm := range classRe.FindAllStringSubmatchIndex(src, -1) {
+		recv := src[cm[2]:cm[3]]
+		body := src[cm[4]:cm[5]]
+		base := cm[4]
+		for _, mm := range methodRe.FindAllStringSubmatchIndex(body, -1) {
+			name := body[mm[2]:mm[3]]
+			if name == "if" || name == "for" || name == "while" || name == "switch" {
+				continue
+			}
+			out = append(out, domain.Method{Receiver: recv, Name: name, Path: rel, Line: lineForIndex(src, base+mm[0])})
+		}
+	}
+	return out
+}
+
+func jsTests(rel, src string) []domain.Test {
+	var out []domain.Test
+	if !strings.Contains(strings.ToLower(rel), ".test.") && !strings.Contains(strings.ToLower(rel), ".spec.") && !strings.HasSuffix(strings.ToLower(rel), "_test.ts") && !strings.HasSuffix(strings.ToLower(rel), "_test.js") {
+		return out
+	}
+	re := regexp.MustCompile(`(?m)\b(?:it|test|describe)\s*\(\s*['"]([^'"]+)['"]`)
+	for _, m := range re.FindAllStringSubmatchIndex(src, -1) {
+		out = append(out, domain.Test{Name: src[m[2]:m[3]], Path: rel, Line: lineForIndex(src, m[0])})
+	}
+	if len(out) == 0 {
+		out = append(out, domain.Test{Name: filepath.Base(rel), Path: rel, Line: 1})
+	}
+	return out
+}
+
+func detectJSContracts(rel, src string) []domain.Contract {
+	path := filepath.ToSlash(strings.ToLower(rel))
+	text := strings.ToLower(src)
+	var out []domain.Contract
+	if strings.Contains(path, "routes") || strings.Contains(path, "controller") || strings.Contains(text, "router.") || strings.Contains(text, "app.") {
+		re := regexp.MustCompile(`(?i)\b(?:router|app)\.(get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]`)
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			out = append(out, domain.Contract{Kind: "RESTEndpoint", Name: strings.ToUpper(m[1]) + " " + m[2], Path: rel, Operation: strings.ToUpper(m[1]), Evidence: "JS/TS route registration", Confidence: 0.8})
+		}
+	}
+	if strings.Contains(path, "graphql") || strings.Contains(text, "resolver") {
+		for _, fn := range jsFunctions(rel, src) {
+			out = append(out, domain.Contract{Kind: "GraphQLField", Name: fn.Name, Path: rel, Operation: "resolve", Evidence: "JS/TS GraphQL resolver/function", Confidence: 0.75})
+		}
+	}
+	if strings.Contains(path, "event") || strings.Contains(path, "consumer") || strings.Contains(path, "producer") || strings.Contains(text, "emit(") || strings.Contains(text, "publish(") {
+		out = append(out, domain.Contract{Kind: "EventType", Name: filepath.Base(rel), Path: rel, Operation: "HANDLES", Evidence: "JS/TS event path or publish/emit usage", Confidence: 0.65})
+	}
+	return out
+}
+
+func lineForIndex(src string, idx int) int {
+	if idx <= 0 {
+		return 1
+	}
+	return strings.Count(src[:idx], "\n") + 1
+}
+
+func appendUniqueString(xs []string, x string) []string {
+	if x == "" {
+		return xs
+	}
+	for _, existing := range xs {
+		if existing == x {
+			return xs
+		}
+	}
+	return append(xs, x)
 }
 
 func detectGoContracts(rel, src string, parsed *ast.File, file domain.IndexedFile) []domain.Contract {

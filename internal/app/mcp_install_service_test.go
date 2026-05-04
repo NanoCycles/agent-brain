@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,5 +25,23 @@ func TestUpsertTOMLSectionReplacesExistingCodexMCP(t *testing.T) {
 	}
 	if strings.Count(got, "[mcp_servers.agent-brain]") != 1 {
 		t.Fatalf("expected one agent-brain section: %s", got)
+	}
+}
+
+func TestInstallJSONMCPShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	result, err := installJSONMCP(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ConfigPath != path || !result.Changed {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"mcpServers"`) || !strings.Contains(string(data), `"agent-brain"`) {
+		t.Fatalf("missing mcp server config: %s", data)
 	}
 }

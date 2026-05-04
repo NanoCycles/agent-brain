@@ -97,6 +97,16 @@ agent-brain mcp install-codex
 
 This updates `~/.codex/config.toml`, creates a timestamped backup when the file already exists, and points Codex at `agent-brain mcp serve`.
 
+Other supported local agent configs:
+
+```sh
+agent-brain mcp install-claude
+agent-brain mcp install-cursor
+agent-brain mcp install-copilot
+```
+
+`install-copilot` writes workspace config to `.vscode/mcp.json` so it is explicit per project. All installers create backups before replacing existing files.
+
 ```json
 {
   "mcpServers": {
@@ -152,6 +162,9 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 - `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
 - `agent-brain mcp serve`: starts the stdio MCP server for AI coding agents.
 - `agent-brain mcp install-codex`: installs the local MCP server into Codex config with a backup.
+- `agent-brain mcp install-claude`: installs the local MCP server into Claude Desktop config with a backup.
+- `agent-brain mcp install-cursor`: installs the local MCP server into Cursor config with a backup.
+- `agent-brain mcp install-copilot`: installs workspace MCP config into `.vscode/mcp.json` for GitHub Copilot.
 - `agent-brain jira import AK-123`: imports a Jira issue into `.ai/tasks/AK-123.md`.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
 - `agent-brain index --repo . --incremental`: skips graph rewrite when indexed file hashes did not change.
@@ -187,8 +200,10 @@ Applied memory is stored in SQLite as the local audit/source-of-truth record and
 - Cobra: stable CLI command framework.
 - modernc.org/sqlite: SQLite driver for `database/sql` without CGO.
 - neo4j-go-driver: official Neo4j Go driver.
-- golang.org/x/tools/go/packages: typed Go package loading for more accurate call graph and interface implementation analysis.
+- golang.org/x/tools/go/packages: typed Go package loading for more accurate Go call graph and interface implementation analysis.
 - yaml.v3: small YAML parser for local rules and config.
+
+The Node/JavaScript/TypeScript indexer intentionally uses lightweight built-in parsing heuristics for MVP portability: imports, exported functions, classes, TypeScript interfaces, tests, REST route registrations, GraphQL resolver-like files, and event files are indexed without adding a JS parser dependency.
 
 ## Publishing Releases
 

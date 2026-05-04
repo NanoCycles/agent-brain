@@ -342,8 +342,56 @@ func mcpCmd(ctx context.Context) *cobra.Command {
 			return nil
 		},
 	}
-	root.AddCommand(serve, installCodex)
+	installClaude := &cobra.Command{
+		Use:     "install-claude",
+		Aliases: []string{"install-cloude"},
+		Short:   "Install agent-brain MCP server into Claude Desktop config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.InstallClaudeMCP()
+			if err != nil {
+				return err
+			}
+			printMCPInstallResult(cmd, "Claude", result)
+			return nil
+		},
+	}
+	installCursor := &cobra.Command{
+		Use:   "install-cursor",
+		Short: "Install agent-brain MCP server into Cursor config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.InstallCursorMCP()
+			if err != nil {
+				return err
+			}
+			printMCPInstallResult(cmd, "Cursor", result)
+			return nil
+		},
+	}
+	installCopilot := &cobra.Command{
+		Use:   "install-copilot",
+		Short: "Install agent-brain MCP server into workspace .vscode/mcp.json for GitHub Copilot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.InstallCopilotMCP(p.Root)
+			if err != nil {
+				return err
+			}
+			printMCPInstallResult(cmd, "Copilot", result)
+			return nil
+		},
+	}
+	root.AddCommand(serve, installCodex, installClaude, installCursor, installCopilot)
 	return root
+}
+
+func printMCPInstallResult(cmd *cobra.Command, name string, result app.MCPInstallResult) {
+	fmt.Fprintf(cmd.OutOrStdout(), "%s MCP configured: %s\nCommand: %s\nChanged: %s\n", name, result.ConfigPath, result.Command, yesNo(result.Changed))
+	if result.BackupPath != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Backup: %s\n", result.BackupPath)
+	}
 }
 
 func jiraCmd(ctx context.Context) *cobra.Command {

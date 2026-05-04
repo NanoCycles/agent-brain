@@ -106,6 +106,8 @@ func DetectRepoCapabilities(repoRoot string, files []domain.IndexedFile) domain.
 	caps := domain.RepoCapabilities{MainLanguage: "unknown", HasGoMod: fileExists(filepath.Join(repoRoot, "go.mod"))}
 	if caps.HasGoMod {
 		caps.MainLanguage = "go"
+	} else if fileExists(filepath.Join(repoRoot, "package.json")) {
+		caps.MainLanguage = "javascript/typescript"
 	}
 	layerSeen := map[string]struct{}{}
 	addEvidence := func(cap, path, reason string, confidence float64) {
@@ -133,6 +135,9 @@ func DetectRepoCapabilities(repoRoot string, files []domain.IndexedFile) domain.
 		hay := path + " " + strings.ToLower(f.Package) + " " + strings.Join(f.Imports, " ") + " " + symbolText(f)
 		if strings.HasSuffix(path, "_test.go") || len(f.Tests) > 0 {
 			addEvidence("testing", f.Path, "test file or test function detected", 0.95)
+		}
+		if strings.Contains(path, ".test.") || strings.Contains(path, ".spec.") {
+			addEvidence("testing", f.Path, "JS/TS test/spec file detected", 0.9)
 		}
 		if strings.Contains(hay, "gqlgen") || strings.Contains(path, "graphql") || strings.Contains(path, "schema.graphql") || strings.HasSuffix(path, ".graphql") || strings.Contains(path, "graph/model") || strings.Contains(path, "graph/generated") || strings.Contains(hay, "resolver") {
 			addEvidence("graphql", f.Path, "GraphQL path, import, schema, generated code, or resolver symbol", 0.85)

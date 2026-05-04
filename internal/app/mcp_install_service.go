@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -48,6 +49,97 @@ func InstallCodexMCP() (MCPInstallResult, error) {
 		}
 	}
 	if err := os.WriteFile(configPath, []byte(next), 0o644); err != nil {
+		return MCPInstallResult{}, err
+	}
+	return result, nil
+}
+
+func InstallClaudeMCP() (MCPInstallResult, error) {
+	configPath, err := claudeConfigPath()
+	if err != nil {
+		return MCPInstallResult{}, err
+	}
+	return installJSONMCP(configPath)
+}
+
+func InstallCursorMCP() (MCPInstallResult, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return MCPInstallResult{}, err
+	}
+	return installJSONMCP(filepath.Join(home, ".cursor", "mcp.json"))
+}
+
+func InstallCopilotMCP(workspaceRoot string) (MCPInstallResult, error) {
+	if workspaceRoot == "" {
+		var err error
+		workspaceRoot, err = os.Getwd()
+		if err != nil {
+			return MCPInstallResult{}, err
+		}
+	}
+	return installJSONMCP(filepath.Join(workspaceRoot, ".vscode", "mcp.json"))
+}
+
+func claudeConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "Claude", "claude_desktop_config.json"), nil
+		}
+		return filepath.Join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json"), nil
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), nil
+	default:
+		return filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"), nil
+	}
+}
+
+func installJSONMCP(configPath string) (MCPInstallResult, error) {
+	command := detectAgentBrainCommand()
+	var existing []byte
+	var root map[string]any
+	if data, err := os.ReadFile(configPath); err == nil {
+		existing = data
+		_ = json.Unmarshal(data, &root)
+	} else if !os.IsNotExist(err) {
+		return MCPInstallResult{}, err
+	}
+	if root == nil {
+		root = map[string]any{}
+	}
+	servers, _ := root["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers["agent-brain"] = map[string]any{
+		"command": command,
+		"args":    []string{"mcp", "serve"},
+	}
+	root["mcpServers"] = servers
+	next, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return MCPInstallResult{}, err
+	}
+	next = append(next, '\n')
+	result := MCPInstallResult{ConfigPath: configPath, Command: command, Changed: string(existing) != string(next)}
+	if !result.Changed {
+		return result, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return MCPInstallResult{}, err
+	}
+	if len(existing) > 0 {
+		result.BackupPath = configPath + ".bak-agent-brain-" + time.Now().UTC().Format("20060102150405")
+		if err := os.WriteFile(result.BackupPath, existing, 0o644); err != nil {
+			return MCPInstallResult{}, err
+		}
+	}
+	if err := os.WriteFile(configPath, next, 0o644); err != nil {
 		return MCPInstallResult{}, err
 	}
 	return result, nil

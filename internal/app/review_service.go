@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/NanoCycles/agent-brain/internal/adapters/filesystem"
@@ -119,8 +120,9 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 			hasTests = true
 		}
 	}
-	if len(files) > 0 && !hasTests {
-		findings = append(findings, domain.Finding{Severity: "medium", Title: "No tests detected", Message: "Current diff does not include *_test.go files."})
+	relatedTests := relatedExistingTests(repoRoot, files, 8)
+	if hasTestableChanges(files) && !hasTests && len(relatedTests) == 0 {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "No tests detected", Message: "Current diff does not include *_test.go files and no related existing tests were found near the changed code."})
 	}
 	decision := domain.Approved
 	for _, f := range findings {
@@ -130,7 +132,150 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		}
 		decision = domain.ChangesRequested
 	}
-	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings), nil
+	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings, relatedTests), nil
+}
+
+func hasTestableChanges(files []string) bool {
+	for _, f := range files {
+		p := filepath.ToSlash(strings.ToLower(f))
+		switch {
+		case strings.HasSuffix(p, "_test.go"):
+			continue
+		case strings.HasSuffix(p, ".go"), strings.HasSuffix(p, ".graphql"), strings.HasSuffix(p, ".proto"), strings.HasSuffix(p, ".sql"), strings.HasSuffix(p, ".yaml"), strings.HasSuffix(p, ".yml"), strings.HasSuffix(p, ".json"):
+			return true
+		}
+	}
+	return false
+}
+
+func relatedExistingTests(repoRoot string, changed []string, limit int) []string {
+	if limit <= 0 {
+		limit = 8
+	}
+	changedSignals := changedTestSignals(changed)
+	if len(changedSignals.Dirs) == 0 && len(changedSignals.Tokens) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			if d != nil && d.IsDir() && shouldSkipReviewWalkDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		lower := strings.ToLower(rel)
+		if !strings.HasSuffix(lower, "_test.go") || filesystem.IsForbiddenPath(rel) {
+			return nil
+		}
+		if testPathMatchesSignals(lower, changedSignals) {
+			if _, ok := seen[rel]; !ok {
+				out = append(out, rel)
+				seen[rel] = struct{}{}
+			}
+		}
+		return nil
+	})
+	sortRelatedTests(out, changedSignals)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+type testSignals struct {
+	Dirs   []string
+	Tokens []string
+}
+
+func changedTestSignals(files []string) testSignals {
+	var signals testSignals
+	for _, f := range files {
+		p := filepath.ToSlash(strings.ToLower(f))
+		if strings.HasSuffix(p, "_test.go") || filesystem.IsForbiddenPath(p) {
+			continue
+		}
+		dir := filepath.Dir(p)
+		if dir != "." {
+			signals.Dirs = appendUnique(signals.Dirs, dir)
+			parent := filepath.Dir(dir)
+			if parent != "." && parent != dir {
+				signals.Dirs = appendUnique(signals.Dirs, parent)
+			}
+		}
+		base := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		for _, token := range strings.FieldsFunc(base+" "+dir, func(r rune) bool {
+			return r == '_' || r == '-' || r == '/' || r == '\\' || r == '.'
+		}) {
+			if len(token) >= 4 && !isWeakTestToken(token) {
+				signals.Tokens = appendUnique(signals.Tokens, token)
+			}
+		}
+	}
+	return signals
+}
+
+func testPathMatchesSignals(testPath string, signals testSignals) bool {
+	for _, dir := range signals.Dirs {
+		if strings.HasPrefix(testPath, dir+"/") {
+			return true
+		}
+	}
+	matches := 0
+	for _, token := range signals.Tokens {
+		if strings.Contains(testPath, token) {
+			matches++
+		}
+	}
+	return matches >= 2
+}
+
+func shouldSkipReviewWalkDir(name string) bool {
+	switch name {
+	case ".git", "vendor", "node_modules", "dist", "build", "target", "bin", "coverage", ".agent-brain":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWeakTestToken(token string) bool {
+	switch token {
+	case "internal", "application", "infrastructure", "adapters", "secondary", "primary", "service", "services", "handler", "server", "generated", "models":
+		return true
+	default:
+		return false
+	}
+}
+
+func sortRelatedTests(tests []string, signals testSignals) {
+	score := func(path string) int {
+		score := 0
+		for _, dir := range signals.Dirs {
+			if strings.HasPrefix(path, dir+"/") {
+				score += 10
+			}
+		}
+		for _, token := range signals.Tokens {
+			if strings.Contains(path, token) {
+				score += 3
+			}
+		}
+		return score
+	}
+	sort.Slice(tests, func(i, j int) bool {
+		si, sj := score(tests[i]), score(tests[j])
+		if si == sj {
+			return tests[i] < tests[j]
+		}
+		return si > sj
+	})
 }
 
 func addedLinesByFile(ctx context.Context, repoRoot string) (map[string]string, error) {
@@ -265,11 +410,17 @@ func looksLikeEventContractPath(path string) bool {
 		strings.Contains(path, "/broker")
 }
 
-func renderDiffSummary(files []string, findings []domain.Finding) string {
+func renderDiffSummary(files []string, findings []domain.Finding, relatedTests []string) string {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "Modified files: %d\n", len(files))
 	for _, f := range files {
 		fmt.Fprintf(&b, "- %s (%s)\n", f, layerForPath(f))
+	}
+	if len(relatedTests) > 0 {
+		b.WriteString("Existing related tests to run:\n")
+		for _, t := range relatedTests {
+			fmt.Fprintf(&b, "- %s\n", t)
+		}
 	}
 	if len(findings) > 0 {
 		b.WriteString("Findings:\n")

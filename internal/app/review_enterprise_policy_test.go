@@ -96,6 +96,43 @@ func Changed() string {
 	}
 }
 
+func TestRelatedExistingTestsFindsIntegrationTestsNearChangedCode(t *testing.T) {
+	root := t.TempDir()
+	changed := filepath.Join("internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "nested_args_batch.go")
+	testPath := filepath.Join(root, "internal", "infrastructure", "adapters", "secondary", "graphql", "transformers", "nested_args_resolver_test.go")
+	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testPath, []byte("package transformers\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := relatedExistingTests(root, []string{changed}, 8)
+	if len(tests) == 0 || !strings.Contains(tests[0], "nested_args_resolver_test.go") {
+		t.Fatalf("expected related existing test, got %#v", tests)
+	}
+}
+
+func TestNoTestsFindingSkippedWhenRelatedExistingTestsExist(t *testing.T) {
+	root := t.TempDir()
+	changed := filepath.Join("internal", "foo", "stripe_service.go")
+	testPath := filepath.Join(root, "internal", "foo", "stripe_service_integration_test.go")
+	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testPath, []byte("package foo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := relatedExistingTests(root, []string{changed}, 8)
+	if len(tests) == 0 {
+		t.Fatal("expected existing related tests")
+	}
+	if hasTestableChanges([]string{changed}) && len(tests) == 0 {
+		t.Fatal("would incorrectly emit no-tests finding")
+	}
+}
+
 func hasFindingTitle(findings []domain.Finding, title string) bool {
 	for _, finding := range findings {
 		if finding.Title == title {

@@ -62,6 +62,23 @@ npm install -g @nanocycles/agent-brain
 agent-brain prepare --task .ai/tasks/TICKET.md
 ```
 
+First run in a repository:
+
+```sh
+agent-brain init
+agent-brain up
+agent-brain index --repo .
+agent-brain status
+```
+
+Then create or import a task and prepare the agent context:
+
+```sh
+mkdir -p .ai/tasks
+echo "# TICKET-123\n\nDescribe the bug or feature here." > .ai/tasks/TICKET-123.md
+agent-brain prepare --task .ai/tasks/TICKET-123.md --budget cavernicola
+```
+
 For Jira-driven work:
 
 ```sh
@@ -75,6 +92,64 @@ Neo4j runs locally with user `neo4j` and password `agentbrain`. Each initialized
 
 The default context budget is `cavernicola`: minimal tokens, top-ranked files only, compact risks/tests/strategy, and no long prose. Use `--budget standard` or `--budget deep` only when the agent truly needs more context.
 
+## How It Works
+
+`agent-brain` runs fully local. Each repository gets its own `.agent-brain/` directory, SQLite metadata database, Docker Compose file, Neo4j container, Neo4j volume, context packs, and memory proposals.
+
+```mermaid
+flowchart LR
+  Dev["Developer / Human"] --> Agent["AI coding agent\nCodex / Cursor / Claude / Copilot"]
+  Agent --> MCP["agent-brain MCP server\nstdio"]
+  Agent --> CLI["agent-brain CLI"]
+  CLI --> Repo["Target repository\ncode is source of truth"]
+  MCP --> CLI
+  CLI --> SQLite["SQLite metadata\n.agent-brain/runtime/metadata.sqlite"]
+  CLI --> Neo4j["Neo4j graph\nlocal Docker container"]
+  CLI --> Rules["Rules\n.agent-brain/rules"]
+  CLI --> Context["Context packs\n.ai/context/*.agent.md/json"]
+  CLI --> Memory["Approved memory\nSQLite + Neo4j + .agent-brain/memory"]
+  Agent --> Context
+  Agent --> Memory
+```
+
+Indexing reads source files safely, skips forbidden paths, extracts code structure and contracts, and writes both metadata and graph nodes.
+
+```mermaid
+flowchart TD
+  Repo["Repository"] --> Filter["Forbidden path filter\n.env, keys, secrets, vendor, node_modules"]
+  Filter --> Indexer["Code indexer\nGo + JS/TS + GraphQL + proto"]
+  Indexer --> Metadata["SQLite\nrepositories, runs, files, context packs, memory"]
+  Indexer --> Graph["Neo4j\nRepository, File, Function, Method, Struct,\nInterface, Test, Contract, Layer"]
+  Graph --> Impact["impact/context graph expansion"]
+  Metadata --> Context["context pack generation"]
+  Rules["YAML rules"] --> Context
+  Memory["Approved domain memory"] --> Context
+  Context --> Agent["Agent opens top files first"]
+```
+
+Daily agent workflow:
+
+```mermaid
+sequenceDiagram
+  participant H as Human
+  participant A as Agent
+  participant B as agent-brain
+  participant R as Repo
+  participant G as Neo4j/SQLite
+
+  H->>A: "Implement TICKET-123"
+  A->>B: start_task or prepare --task
+  B->>R: safe index/read
+  B->>G: update metadata/graph
+  B-->>A: compact context pack + top files + risks + tests
+  A->>R: minimal code change
+  A->>B: review-diff
+  B-->>A: findings / APPROVED
+  A->>B: finish_task
+  B-->>H: memory proposals for approval
+  H->>B: memory apply if approved
+```
+
 ## Flow With Codex/Cursor
 
 Agents should also read `AGENTS.md` in this repository. It is the compact operating contract for coding agents using `agent-brain`.
@@ -84,6 +159,15 @@ Agents should also read `AGENTS.md` in this repository. It is the compact operat
 3. Ask the agent to read `.ai/context/<TASK_ID>.agent.md` before editing, or paste the prompt printed by `agent-brain prepare`.
 5. After implementation, run `agent-brain review-diff`.
 6. Generate memory with `agent-brain memory-proposal --task .ai/tasks/TICKET.md`.
+
+For MCP-connected agents, prefer this prompt:
+
+```text
+Use agent-brain first. Call start_task with task_path or topic before reading files.
+Open only top-ranked files first. Run focused tests. Call review_diff before final response.
+Call finish_task after validation and ask before applying memory.
+Do not commit or push unless explicitly asked.
+```
 
 ## MCP Integration
 
@@ -106,6 +190,17 @@ agent-brain mcp install-copilot
 ```
 
 `install-copilot` writes workspace config to `.vscode/mcp.json` so it is explicit per project. All installers create backups before replacing existing files.
+
+Installer targets:
+
+| Command | Target |
+|---|---|
+| `agent-brain mcp install-codex` | `~/.codex/config.toml` |
+| `agent-brain mcp install-claude` | Claude Desktop config |
+| `agent-brain mcp install-cursor` | `~/.cursor/mcp.json` |
+| `agent-brain mcp install-copilot` | `.vscode/mcp.json` in the current repo |
+
+After installing MCP config, restart the agent application so it launches the new MCP server process.
 
 ```json
 {
@@ -144,6 +239,94 @@ Recommended agent flow:
 The MCP server exposes these tools: `start_task`, `finish_task`, `prepare_context`, `get_context_pack`, `impact`, `review_diff`, `status`, `doctor`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
 
 Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
+
+## Language Support
+
+Current indexer support:
+
+| Language / artifact | Indexed |
+|---|---|
+| Go | packages, files, structs, interfaces, functions, methods, tests, imports, contracts, calls, typed interface/call hints |
+| JavaScript / TypeScript | imports, require, exported functions, classes, TypeScript interfaces, class methods, tests, REST routes, GraphQL resolver-like files, event files |
+| GraphQL schema | schema files and GraphQL contract nodes |
+| protobuf | service/RPC contract nodes |
+
+Go indexing uses `go/parser`, `go/ast`, `go/token`, and `go/packages`. JS/TS indexing intentionally uses lightweight built-in heuristics for portability and zero extra parser dependency. It is good enough for context routing, but it is not a full TypeScript compiler.
+
+Node/TS quick test:
+
+```sh
+agent-brain init
+agent-brain up
+agent-brain index --repo .
+agent-brain status
+agent-brain impact --topic "rest auth route validation" --budget cavernicola
+```
+
+Expected result for a Node/TS repo with `package.json`: `MainLanguage=javascript/typescript`, plus REST/GraphQL/Events/Persistence/Tests capabilities when evidence exists.
+
+## Testing In A Real Project
+
+Use this sequence inside a target project:
+
+```sh
+agent-brain doctor
+agent-brain init
+agent-brain up
+agent-brain index --repo .
+agent-brain status
+```
+
+Create a task:
+
+```sh
+agent-brain jira import AK-123
+# or, if Jira CLI credentials are not available:
+agent-brain jira import AK-123 --offline
+```
+
+Generate context and inspect impact:
+
+```sh
+agent-brain prepare --task .ai/tasks/AK-123.md --budget cavernicola
+agent-brain impact --topic "main technical topic" --budget cavernicola
+agent-brain memory-domain list --area all --topic "main technical topic"
+```
+
+Before finishing a code change:
+
+```sh
+agent-brain review-diff
+agent-brain memory-proposal --task .ai/tasks/AK-123.md
+agent-brain memory-domain propose --task .ai/tasks/AK-123.md --area all
+```
+
+Only apply memory after human approval:
+
+```sh
+agent-brain memory-apply .ai/memory-proposals/AK-123.yml --yes
+agent-brain memory-domain apply .ai/memory-proposals/AK-123.domain.yml --yes
+```
+
+## Neo4j Browser
+
+Use `agent-brain status` to get the per-project ports:
+
+```text
+Neo4j HTTP URL: http://localhost:<http-port>
+Neo4j Bolt URI: bolt://localhost:<bolt-port>
+```
+
+Open the HTTP URL in a browser, then connect with:
+
+```text
+Protocol: bolt://
+Connection URL: localhost:<bolt-port>
+User: neo4j
+Password: agentbrain
+```
+
+Do not use `neo4j+s://localhost:7474` for local agent-brain containers. `7474` is the default Neo4j HTTP port, while agent-brain assigns per-project ports to avoid mixing repositories.
 
 ## Commands
 
@@ -184,6 +367,35 @@ Project information updates when `prepare_context` runs, unless `no_index` is tr
 Memory is local and explicit. A proposal is first written to `.ai/memory-proposals/` and is not trusted until it is confirmed. Implementation memory captures what changed for a task. Domain memory captures how the system works: concepts, components, business rules, and invariants, grouped by areas such as `graphql`, `auth`, `billing`, `events`, and `persistence`.
 
 Applied memory is stored in SQLite as the local audit/source-of-truth record and mirrored into Neo4j as technical/business graph nodes so future impact/context queries can use it. Source code remains the source of truth for implementation details.
+
+Memory lifecycle:
+
+```mermaid
+flowchart LR
+  Task["Task solved"] --> Proposal["memory-proposal\nmemory-domain propose"]
+  Proposal --> Human["Human reviews proposal"]
+  Human -->|approved| Apply["memory-apply\nmemory-domain apply"]
+  Human -->|not approved| Discard["Do not persist"]
+  Apply --> Files[".agent-brain/memory\n.agent-brain/memory-proposals"]
+  Apply --> SQLite["SQLite applied memory"]
+  Apply --> Neo4j["Neo4j memory/rule/risk/concept nodes"]
+  Neo4j --> Future["Future context packs and impact"]
+  SQLite --> Future
+```
+
+Implementation memory is useful for historical task learning. Domain memory is more important for long-lived business context: what the system does, which components own behavior, public contract semantics, security invariants, and known pitfalls.
+
+## Review Quality
+
+`review-diff` is intentionally read-only. It checks changed files, contracts, forbidden paths, introduced enterprise risks, and test coverage evidence. If the diff does not add tests, it searches for existing related tests near the changed code and prints them as tests to run instead of blindly failing with "No tests detected".
+
+`review-comments` turns external review text into a prioritized repair plan:
+
+```sh
+agent-brain review-comments --file .ai/reviews/TICKET-review-comments.md
+```
+
+This is intended for GitHub comments from Claude, Copilot, human reviewers, or internal review bots. The agent should fix critical/high findings first, run focused tests, then call `review-diff` again.
 
 ## Security
 

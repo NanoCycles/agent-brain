@@ -24,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -430,7 +430,103 @@ func jiraCmd(ctx context.Context) *cobra.Command {
 	importCmd.Flags().StringVar(&token, "token", "", "Jira API token, or JIRA_API_TOKEN")
 	importCmd.Flags().StringVar(&out, "out", "", "task output directory")
 	importCmd.Flags().BoolVar(&offline, "offline", false, "create a local task shell without calling Jira")
-	root.AddCommand(importCmd)
+	var key, sourceURL, summary, description, issueType, status, priority string
+	var ac, comments, labels []string
+	fromMCP := &cobra.Command{
+		Use:   "from-mcp",
+		Short: "Create .ai/tasks/<KEY>.md from Jira fields supplied by an agent/Jira MCP",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if key == "" {
+				return fmt.Errorf("--key is required")
+			}
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				out = filepath.Join(p.Root, ".ai", "tasks")
+			}
+			result, err := app.ImportJiraIssueContent(app.JiraIssueContentOptions{
+				Key:                key,
+				SourceURL:          sourceURL,
+				Summary:            summary,
+				Description:        description,
+				AcceptanceCriteria: ac,
+				Comments:           comments,
+				IssueType:          issueType,
+				Status:             status,
+				Priority:           priority,
+				Labels:             labels,
+				OutputDir:          out,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Jira task imported from MCP content: %s\nTask ID: %s\n", result.Path, result.TaskID)
+			return nil
+		},
+	}
+	fromMCP.Flags().StringVar(&key, "key", "", "Jira issue key")
+	fromMCP.Flags().StringVar(&sourceURL, "source-url", "", "Jira browse URL")
+	fromMCP.Flags().StringVar(&summary, "summary", "", "Jira summary")
+	fromMCP.Flags().StringVar(&description, "description", "", "Jira description")
+	fromMCP.Flags().StringArrayVar(&ac, "ac", nil, "acceptance criterion; repeatable")
+	fromMCP.Flags().StringArrayVar(&comments, "comment", nil, "Jira comment; repeatable")
+	fromMCP.Flags().StringVar(&issueType, "issue-type", "", "Jira issue type")
+	fromMCP.Flags().StringVar(&status, "status", "", "Jira status")
+	fromMCP.Flags().StringVar(&priority, "priority", "", "Jira priority")
+	fromMCP.Flags().StringArrayVar(&labels, "label", nil, "Jira label; repeatable")
+	fromMCP.Flags().StringVar(&out, "out", "", "task output directory")
+	root.AddCommand(importCmd, fromMCP)
+	return root
+}
+
+func githubCmd(ctx context.Context) *cobra.Command {
+	root := &cobra.Command{Use: "github", Short: "Import GitHub PR review context for agents"}
+	var pr, repo, out, token string
+	var review bool
+	comments := &cobra.Command{
+		Use:   "review-comments",
+		Short: "Import GitHub PR comments into .ai/reviews and optionally build an agent repair plan",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if pr == "" {
+				return fmt.Errorf("--pr is required")
+			}
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				out = filepath.Join(p.Root, ".ai", "reviews")
+			}
+			result, err := app.ImportGitHubPRComments(ctx, app.GitHubPRCommentsOptions{
+				RepoRoot:  p.Root,
+				PR:        pr,
+				OwnerRepo: repo,
+				OutputDir: out,
+				Token:     token,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "GitHub PR comments imported: %s\nRepository: %s\nPR: #%s\nComments: %d\nSource: %s\n", result.Path, result.OwnerRepo, result.PR, result.CommentCount, result.Source)
+			if review {
+				_, summary, err := app.NewReviewService().ReviewComments(result.Path)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprint(cmd.OutOrStdout(), summary)
+			}
+			return nil
+		},
+	}
+	comments.Flags().StringVar(&pr, "pr", "", "PR number or GitHub pull request URL")
+	comments.Flags().StringVar(&repo, "repo", "", "GitHub owner/repo; defaults to git origin")
+	comments.Flags().StringVar(&out, "out", "", "review comments output directory")
+	comments.Flags().StringVar(&token, "token", "", "GitHub token; defaults to GITHUB_TOKEN or GH_TOKEN")
+	comments.Flags().BoolVar(&review, "review", true, "run review-comments after import")
+	root.AddCommand(comments)
 	return root
 }
 

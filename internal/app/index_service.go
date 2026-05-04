@@ -57,8 +57,14 @@ func (s *IndexService) IndexWithOptions(ctx context.Context, repoRoot string, op
 	graphUpdated := false
 	if s.graph != nil {
 		if err := s.graph.Ping(ctx); err == nil && (!opts.Incremental || len(changed) > 0 || len(previous) == 0) {
-			if err := s.graph.SaveIndex(ctx, idx); err != nil {
-				return IndexResult{}, err
+			if opts.Incremental && len(previous) > 0 {
+				if err := s.graph.SaveIndexChanges(ctx, idx, changed); err != nil {
+					return IndexResult{}, err
+				}
+			} else {
+				if err := s.graph.SaveIndex(ctx, idx); err != nil {
+					return IndexResult{}, err
+				}
 			}
 			graphUpdated = true
 		}

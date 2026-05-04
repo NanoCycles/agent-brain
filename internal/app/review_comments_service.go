@@ -20,7 +20,11 @@ func (s *ReviewService) ReviewComments(commentsPath string) (ReviewCommentReport
 	if err != nil {
 		return ReviewCommentReport{}, "", err
 	}
-	findings := reviewFindingsFromText(string(data))
+	return s.ReviewCommentsFromText(string(data))
+}
+
+func (s *ReviewService) ReviewCommentsFromText(text string) (ReviewCommentReport, string, error) {
+	findings := reviewFindingsFromText(text)
 	decision := domain.Approved
 	for _, finding := range findings {
 		switch strings.ToLower(finding.Severity) {

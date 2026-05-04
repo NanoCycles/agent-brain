@@ -73,6 +73,12 @@ func (s *ReviewService) ReviewPlan(planPath, rulesDir string) (ReviewReport, err
 			findings = append(findings, domain.Finding{Severity: "high", Title: "GraphQL DoS controls not addressed", Message: "Plans touching public GraphQL queries/resolvers should state whether depth/complexity limits remain enforced."})
 		}
 	}
+	if touchesPublicBoundaryTopic(plan) && !strings.Contains(plan, "validation") && !strings.Contains(plan, "validate") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary validation missing", Message: "Plans touching HTTP/GraphQL/RPC/event boundaries must explicitly address input validation."})
+	}
+	if touchesPublicBoundaryTopic(plan) && !strings.Contains(plan, "auth") && !strings.Contains(plan, "permission") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary authorization missing", Message: "Plans touching public boundaries must state how existing auth/authz remains enforced."})
+	}
 	if analysis.MainCapability == "events" && !strings.Contains(plan, "idempot") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Event idempotency missing", Message: "Event plans must mention idempotency and duplicate delivery handling."})
 	}
@@ -325,13 +331,18 @@ func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
 	}
 	fullText := strings.ToLower(string(data))
 	text := strings.ToLower(addedText)
+	codeText := stripQuotedStrings(text)
+	testPath := isTestPath(p)
 	var findings []domain.Finding
-	if strings.HasSuffix(p, ".go") && (strings.Contains(text, "fmt.println(") || strings.Contains(text, "println(")) {
+	if !testPath && strings.HasSuffix(p, ".go") && containsDebugPrint(codeText) {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Debug print in production path", Message: "Review protocol blocks fmt.Println/println debug output in production code paths. Use structured logging if needed.", Path: path})
 	}
 	if strings.Contains(p, "graphql") {
 		if mentionsGraphQLRelations(text) && !strings.Contains(fullText, "dataloader") && !strings.Contains(fullText, "batch") {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "GraphQL relation batching not evident", Message: "GraphQL relation code appears to lack DataLoader/batched fetching evidence; external review may block N+1 risk.", Path: path})
+		}
+		if touchesGraphQLPublicExecution(p, text) && !reviewTextContainsAny(fullText, "depth", "complexity", "cost") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "GraphQL DoS controls not evident", Message: "Public GraphQL execution changes should show query depth/complexity/cost controls remain enforced.", Path: path})
 		}
 		if strings.Contains(text, "subscription") && strings.Contains(text, "tenant") && !strings.Contains(fullText, "auth") {
 			findings = append(findings, domain.Finding{Severity: "critical", Title: "Subscription tenant/auth revalidation unclear", Message: "Subscription code references tenant behavior without visible auth revalidation.", Path: path})
@@ -343,13 +354,35 @@ func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
 	if touchesCachePathOrText(p, text) && (strings.Contains(text, "tenant") || strings.Contains(text, "project")) && !cacheKeyLooksScoped(fullText) {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Cache key tenant scope unclear", Message: "Cache changes for tenant/project data should make tenant/project scope visible in the cache key.", Path: path})
 	}
+	if touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "auth", "authorize", "permission", "middleware") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary authorization not evident", Message: "Public boundary changes should visibly preserve auth/authz middleware or permission checks.", Path: path})
+	}
+	if touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "valid", "bind", "decode", "sanitize") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary input validation not evident", Message: "HTTP/GraphQL/RPC/event boundary changes should visibly validate or decode inputs safely.", Path: path})
+	}
+	if touchesEventPathOrText(p, text) && !reviewTextContainsAny(fullText, "idempot", "dedup", "processed", "duplicate") {
+		findings = append(findings, domain.Finding{Severity: "critical", Title: "Event idempotency not evident", Message: "Event consumer/producer changes must show duplicate delivery/idempotency handling.", Path: path})
+	}
 	if touchesAuditPathOrText(p, text) && !strings.Contains(fullText, "transaction") && !strings.Contains(fullText, "tx.") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Audit transactional consistency unclear", Message: "Audit changes should show how audit writes stay consistent with the data write.", Path: path})
 	}
-	if strings.Contains(text, "context.todo()") || strings.Contains(text, "context.background()") {
+	findings = append(findings, architectureBoundaryFindings(p, fullText, path)...)
+	if !testPath {
+		findings = append(findings, secretAndInjectionFindings(p, text, codeText, path)...)
+	}
+	findings = append(findings, contextAndResourceFindings(p, fullText, codeText, testPath, path)...)
+	if !testPath && (strings.Contains(codeText, "context.todo()") || strings.Contains(codeText, "context.background()")) {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "Context propagation risk", Message: "Production paths should propagate request context instead of creating background/TODO contexts.", Path: path})
 	}
 	return findings
+}
+
+func isTestPath(path string) bool {
+	path = filepath.ToSlash(strings.ToLower(path))
+	return strings.HasSuffix(path, "_test.go") ||
+		strings.Contains(path, ".test.") ||
+		strings.Contains(path, ".spec.") ||
+		strings.Contains(path, "/testdata/")
 }
 
 func contractDiffFindings(repoRoot, path string) []domain.Finding {
@@ -366,7 +399,8 @@ func contractDiffFindings(repoRoot, path string) []domain.Finding {
 		return findings
 	}
 	text := strings.ToLower(string(data))
-	if strings.Contains(text, "handlefunc(") || strings.Contains(text, ".get(") || strings.Contains(text, ".post(") || strings.Contains(text, ".put(") || strings.Contains(text, ".patch(") || strings.Contains(text, ".delete(") {
+	codeText := stripQuotedStrings(text)
+	if !isTestPath(p) && looksLikeRESTSurfacePathOrText(p, codeText) && (strings.Contains(codeText, "handlefunc(") || strings.Contains(codeText, ".get(") || strings.Contains(codeText, ".post(") || strings.Contains(codeText, ".put(") || strings.Contains(codeText, ".patch(") || strings.Contains(codeText, ".delete(")) {
 		findings = append(findings, domain.Finding{Severity: "medium", Title: "REST route registration modified", Message: "Diff appears to touch REST route registration. Verify public route contract and integration tests.", Path: path})
 	}
 	if looksLikeEventContractPath(p) && strings.Contains(text, "type ") {
@@ -375,12 +409,171 @@ func contractDiffFindings(repoRoot, path string) []domain.Finding {
 	return findings
 }
 
+func architectureBoundaryFindings(path, fullText, originalPath string) []domain.Finding {
+	var findings []domain.Finding
+	switch {
+	case strings.Contains(path, "internal/domain"):
+		if reviewTextContainsAny(fullText, "internal/adapters", "internal/infrastructure", "github.com/gin-gonic", "net/http", "database/sql", "graphql", "grpc") {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "Domain layer depends on framework/infrastructure", Message: "Domain code must remain framework-free and must not import adapters, transport, persistence, or generated infrastructure.", Path: originalPath})
+		}
+	case strings.Contains(path, "internal/application"), strings.Contains(path, "internal/usecase"):
+		if reviewTextContainsAny(fullText, "github.com/gin-gonic", "internal/adapters", "internal/infrastructure/adapters", "graphql", "grpc", "net/http") {
+			findings = append(findings, domain.Finding{Severity: "high", Title: "Application layer transport dependency", Message: "Use cases/application services must remain transport-free and depend on ports, not HTTP/GraphQL/gRPC/DB adapters.", Path: originalPath})
+		}
+	}
+	return findings
+}
+
+func secretAndInjectionFindings(path, text, codeText, originalPath string) []domain.Finding {
+	var findings []domain.Finding
+	if containsHardcodedSecretAssignment(text, codeText) {
+		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible hardcoded secret", Message: "Added code appears to assign a credential/secret-like value. Secrets must not be committed or logged.", Path: originalPath})
+	}
+	if reviewTextContainsAny(codeText, "fmt.sprintf", "+ \"select", "+ \" update", "+ \"insert", "+ \"delete", "where \" +", "order by \" +") && reviewTextContainsAny(path, "repository", "store", "dao", "postgres", "mysql", "sqlite", "query") {
+		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible SQL injection", Message: "Dynamic SQL construction in persistence code should use parameters/query builders and validate identifiers.", Path: originalPath})
+	}
+	if reviewTextContainsAny(codeText, "exec.command(", "exec.commandcontext(") && reviewTextContainsAny(codeText, "+", "fmt.sprintf") {
+		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible command injection", Message: "Command arguments must not be built from concatenated or formatted untrusted input.", Path: originalPath})
+	}
+	if reviewTextContainsAny(codeText, "log.", "slog.", "zap.", "fmt.") && reviewTextContainsAny(text, "password", "token", "secret", "authorization", "cookie") {
+		findings = append(findings, domain.Finding{Severity: "critical", Title: "Sensitive data logging risk", Message: "Logs must not include secrets, tokens, cookies, authorization headers, or full sensitive payloads.", Path: originalPath})
+	}
+	return findings
+}
+
+func containsHardcodedSecretAssignment(text, codeText string) bool {
+	codeLines := strings.Split(codeText, "\n")
+	rawLines := strings.Split(text, "\n")
+	for i, codeLine := range codeLines {
+		codeLine = strings.TrimSpace(codeLine)
+		if !reviewTextContainsAny(codeLine, "api_key", "apikey", "secret", "password", "passwd", "token", "private_key") {
+			continue
+		}
+		if !reviewTextContainsAny(codeLine, "=", ":=", "const ", "var ") {
+			continue
+		}
+		if strings.Contains(codeLine, "reviewtextcontainsany") || strings.Contains(codeLine, "strings.contains") {
+			continue
+		}
+		rawLine := codeLine
+		if i < len(rawLines) {
+			rawLine = rawLines[i]
+		}
+		if reviewTextContainsAny(rawLine, `"`, "`") {
+			return true
+		}
+	}
+	return false
+}
+
+func contextAndResourceFindings(path, fullText, codeText string, testPath bool, originalPath string) []domain.Finding {
+	if testPath {
+		return nil
+	}
+	var findings []domain.Finding
+	if reviewTextContainsAny(codeText, "http.get(", "http.post(", "http.head(", "http.defaultclient.do(") && !reviewTextContainsAny(codeText, "newrequestwithcontext", "request.withcontext") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "HTTP call lacks context", Message: "Production HTTP calls should use NewRequestWithContext and bounded clients/timeouts.", Path: originalPath})
+	}
+	if strings.Contains(codeText, "exec.command(") && !strings.Contains(codeText, "exec.commandcontext(") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Command execution lacks context", Message: "Production command execution should use exec.CommandContext.", Path: originalPath})
+	}
+	if reviewTextContainsAny(codeText, ".query(", ".queryrow(", ".exec(") && !reviewTextContainsAny(codeText, ".querycontext(", ".queryrowcontext(", ".execcontext(") && touchesPersistencePathOrText(path, codeText) {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Database call lacks context", Message: "Persistence code should use context-aware DB calls.", Path: originalPath})
+	}
+	if strings.Contains(codeText, "os.open(") && !strings.Contains(fullText, ".close()") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "File handle close not evident", Message: "Opened files must be closed on all paths.", Path: originalPath})
+	}
+	if reviewTextContainsAny(codeText, "time.newticker(", "time.newtimer(") && !strings.Contains(fullText, ".stop()") {
+		findings = append(findings, domain.Finding{Severity: "high", Title: "Timer/ticker stop not evident", Message: "Timers and tickers should be stopped to avoid resource leaks.", Path: originalPath})
+	}
+	if strings.Contains(codeText, "go func(") && !reviewTextContainsAny(fullText, "ctx.done()", "recover()", "errgroup", "waitgroup") {
+		findings = append(findings, domain.Finding{Severity: "medium", Title: "Goroutine lifecycle unclear", Message: "New goroutines should show cancellation, ownership, or panic/error handling.", Path: originalPath})
+	}
+	return findings
+}
+
+func stripQuotedStrings(text string) string {
+	var b strings.Builder
+	inSingle := false
+	inDouble := false
+	inRaw := false
+	escaped := false
+	for _, r := range text {
+		switch {
+		case inRaw:
+			if r == '`' {
+				inRaw = false
+				b.WriteRune(' ')
+			}
+			continue
+		case inSingle:
+			if !escaped && r == '\'' {
+				inSingle = false
+				b.WriteRune(' ')
+			}
+			escaped = !escaped && r == '\\'
+			continue
+		case inDouble:
+			if !escaped && r == '"' {
+				inDouble = false
+				b.WriteRune(' ')
+			}
+			escaped = !escaped && r == '\\'
+			continue
+		case r == '`':
+			inRaw = true
+			b.WriteRune(' ')
+		case r == '\'':
+			inSingle = true
+			escaped = false
+			b.WriteRune(' ')
+		case r == '"':
+			inDouble = true
+			escaped = false
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func containsDebugPrint(text string) bool {
+	if strings.Contains(text, "fmt.println(") {
+		return true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "println(") || strings.Contains(line, " println(") || strings.Contains(line, "\tprintln(") {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeRESTSurfacePathOrText(path, text string) bool {
+	return strings.Contains(path, "/http/") ||
+		strings.Contains(path, "/rest/") ||
+		strings.Contains(path, "/routes/") ||
+		strings.Contains(path, "/router/") ||
+		strings.Contains(path, "/handler") ||
+		strings.Contains(text, "net/http") ||
+		strings.Contains(text, "gin.") ||
+		strings.Contains(text, "chi.") ||
+		strings.Contains(text, "echo.") ||
+		strings.Contains(text, "handlefunc(")
+}
+
 func mentionsGraphQLRelations(text string) bool {
 	return strings.Contains(text, "relation") || strings.Contains(text, "relationship") || strings.Contains(text, "resolver") || strings.Contains(text, "nested")
 }
 
 func touchesCacheTopic(text string) bool {
 	return strings.Contains(text, "cache") || strings.Contains(text, "redis")
+}
+
+func touchesPublicBoundaryTopic(text string) bool {
+	return reviewTextContainsAny(text, "http", "rest", "route", "handler", "graphql", "resolver", "grpc", "rpc", "event", "consumer", "producer", "websocket")
 }
 
 func touchesAuditTopic(text string) bool {
@@ -393,6 +586,25 @@ func touchesCachePathOrText(path, text string) bool {
 
 func touchesAuditPathOrText(path, text string) bool {
 	return strings.Contains(path, "audit") || strings.Contains(text, "audit")
+}
+
+func touchesPersistencePathOrText(path, text string) bool {
+	return reviewTextContainsAny(path, "repository", "store", "dao", "postgres", "mysql", "sqlite", "persistence") ||
+		reviewTextContainsAny(text, "database/sql", "sql.", "db.")
+}
+
+func touchesPublicBoundaryPathOrText(path, text string) bool {
+	return reviewTextContainsAny(path, "/http/", "/rest/", "/handler", "/handlers/", "/router", "/routes/", "/graphql/", "/grpc/", "/proto/", "/events/", "/consumer", "/producer", "/websocket") ||
+		reviewTextContainsAny(text, "handlefunc(", "gin.", "chi.", "echo.", "resolver", "graphql", "grpc", "websocket", "consumer", "producer")
+}
+
+func touchesGraphQLPublicExecution(path, text string) bool {
+	return reviewTextContainsAny(path, "graphql", "resolver", "schema") && reviewTextContainsAny(text, "resolver", "query", "schema", "handler", "server")
+}
+
+func touchesEventPathOrText(path, text string) bool {
+	return reviewTextContainsAny(path, "/event", "/events", "/consumer", "/producer", "/kafka", "/pubsub", "/broker") ||
+		reviewTextContainsAny(text, "consumer", "producer", "publish", "subscribe", "kafka", "pubsub", "event")
 }
 
 func cacheKeyLooksScoped(text string) bool {
@@ -408,6 +620,15 @@ func looksLikeEventContractPath(path string) bool {
 		strings.Contains(path, "/kafka") ||
 		strings.Contains(path, "/pubsub") ||
 		strings.Contains(path, "/broker")
+}
+
+func reviewTextContainsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderDiffSummary(files []string, findings []domain.Finding, relatedTests []string) string {

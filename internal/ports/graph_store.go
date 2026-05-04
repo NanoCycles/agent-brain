@@ -9,6 +9,7 @@ import (
 type GraphStore interface {
 	Ping(ctx context.Context) error
 	SaveIndex(ctx context.Context, index domain.CodeIndex) error
+	SaveIndexChanges(ctx context.Context, index domain.CodeIndex, changedPaths []string) error
 	Stats(ctx context.Context) (domain.GraphStats, error)
 	SearchImpact(ctx context.Context, topic string, limit int) ([]domain.GraphNode, error)
 	ExpandImpact(ctx context.Context, repoRoot string, topics []string, limit int) ([]domain.GraphNode, error)

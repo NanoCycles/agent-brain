@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	dockerruntime "github.com/NanoCycles/agent-brain/internal/adapters/docker"
 	"github.com/NanoCycles/agent-brain/internal/adapters/filesystem"
@@ -21,12 +23,13 @@ import (
 )
 
 type Server struct {
-	in  io.Reader
-	out io.Writer
+	in         io.Reader
+	out        io.Writer
+	operations *operationStore
 }
 
 func NewServer(in io.Reader, out io.Writer) *Server {
-	return &Server{in: in, out: out}
+	return &Server{in: in, out: out, operations: newOperationStore()}
 }
 
 type request struct {
@@ -51,6 +54,32 @@ type rpcError struct {
 type toolCallParams struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+}
+
+type operation struct {
+	ID          string    `json:"operation_id"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Progress    int       `json:"progress"`
+	Stage       string    `json:"stage"`
+	Result      string    `json:"result,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	cancel      context.CancelFunc
+}
+
+type operationStore struct {
+	mu  sync.Mutex
+	seq int64
+	ops map[string]*operation
+	max int
+	ttl time.Duration
+}
+
+func newOperationStore() *operationStore {
+	return &operationStore{ops: map[string]*operation{}, max: 64, ttl: 2 * time.Hour}
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -100,7 +129,7 @@ func (s *Server) handle(ctx context.Context, req request) (response, bool) {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return errorResponse(req.ID, -32602, "invalid tool call params"), true
 		}
-		text, err := callTool(ctx, params.Name, params.Arguments)
+		text, err := s.callTool(ctx, params.Name, params.Arguments)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Result: toolError(err.Error())}, true
 		}
@@ -153,6 +182,28 @@ func toolDefinitions() []map[string]any {
 			"fast":      map[string]any{"type": "boolean", "description": "Skip reindex if the last index is recent"},
 			"no_index":  map[string]any{"type": "boolean", "description": "Generate context from existing metadata without indexing"},
 		}),
+		tool("start_task_async", "Start agent-first context preparation in the background and return an operation_id immediately. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
+			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"fast":      map[string]any{"type": "boolean"},
+		}),
+		tool("prepare_context_async", "Start context pack generation in the background and return an operation_id immediately. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
+			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"budget":    map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
+			"fast":      map[string]any{"type": "boolean", "description": "Skip reindex if the last index is recent"},
+			"no_index":  map[string]any{"type": "boolean", "description": "Generate context from existing metadata without indexing"},
+		}),
+		tool("finish_task_async", "Run final diff review and memory proposal generation in the background. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+		}),
+		tool("review_diff_async", "Run review_diff in the background. Use operation_status to poll progress/result.", map[string]any{}),
+		tool("operation_status", "Return status, progress, result, or error for a background MCP operation.", map[string]any{
+			"operation_id": map[string]any{"type": "string"},
+		}),
+		tool("operation_cancel", "Cancel a running background MCP operation.", map[string]any{
+			"operation_id": map[string]any{"type": "string"},
+		}),
 		tool("get_context_pack", "Read an existing generated .agent.md context pack for a task or explicit context path.", map[string]any{
 			"task_path":    map[string]any{"type": "string"},
 			"context_path": map[string]any{"type": "string"},
@@ -164,6 +215,24 @@ func toolDefinitions() []map[string]any {
 		tool("review_diff", "Review current git diff for risks, contracts, tests, forbidden files, and rule violations. Read-only.", map[string]any{}),
 		tool("review_comments", "Turn external code review comments into a prioritized agent repair plan. Read-only.", map[string]any{
 			"comments_path": map[string]any{"type": "string", "description": "Markdown/text file with review comments"},
+		}),
+		tool("github_pr_comments", "Import GitHub PR review comments into .ai/reviews and return an agent repair plan. Requires GITHUB_TOKEN/GH_TOKEN or authenticated gh CLI.", map[string]any{
+			"pr":     map[string]any{"type": "string", "description": "PR number or GitHub pull request URL"},
+			"repo":   map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
+			"token":  map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
+			"review": map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+		}),
+		tool("jira_import_from_mcp", "Create .ai/tasks/<KEY>.md from Jira fields already read by an Atlassian/Jira MCP tool. Use when CLI Jira credentials are unavailable.", map[string]any{
+			"key":                 map[string]any{"type": "string", "description": "Jira issue key, e.g. AK-1184"},
+			"source_url":          map[string]any{"type": "string", "description": "Jira browse URL"},
+			"summary":             map[string]any{"type": "string"},
+			"description":         map[string]any{"type": "string"},
+			"acceptance_criteria": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"comments":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"issue_type":          map[string]any{"type": "string"},
+			"status":              map[string]any{"type": "string"},
+			"priority":            map[string]any{"type": "string"},
+			"labels":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		}),
 		tool("status", "Return project runtime, graph, SQLite, and capability status.", map[string]any{}),
 		tool("doctor", "Diagnose local prerequisites and project wiring for agent-brain.", map[string]any{}),
@@ -200,7 +269,7 @@ func tool(name, description string, props map[string]any) map[string]any {
 	}
 }
 
-func callTool(ctx context.Context, name string, args map[string]any) (string, error) {
+func (s *Server) callTool(ctx context.Context, name string, args map[string]any) (string, error) {
 	p, err := paths.Discover(".")
 	if err != nil {
 		return "", err
@@ -208,10 +277,22 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	switch name {
 	case "start_task":
 		return startTask(ctx, p, args)
+	case "start_task_async":
+		return s.startAsync(ctx, "start_task", args, func(ctx context.Context) (string, error) {
+			return startTask(ctx, p, args)
+		}), nil
 	case "finish_task":
 		return finishTask(ctx, p, args)
+	case "finish_task_async":
+		return s.startAsync(ctx, "finish_task", args, func(ctx context.Context) (string, error) {
+			return finishTask(ctx, p, args)
+		}), nil
 	case "prepare_context":
 		return prepareContext(ctx, p, args)
+	case "prepare_context_async":
+		return s.startAsync(ctx, "prepare_context", args, func(ctx context.Context) (string, error) {
+			return prepareContext(ctx, p, args)
+		}), nil
 	case "get_context_pack":
 		return getContextPack(p, args)
 	case "impact":
@@ -222,6 +303,18 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 			return "", err
 		}
 		return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
+	case "review_diff_async":
+		return s.startAsync(ctx, "review_diff", args, func(ctx context.Context) (string, error) {
+			report, summary, err := app.NewReviewService().ReviewDiff(ctx, p.Root, p.RulesDir)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
+		}), nil
+	case "operation_status":
+		return s.operationStatus(stringArg(args, "operation_id"))
+	case "operation_cancel":
+		return s.operationCancel(stringArg(args, "operation_id"))
 	case "review_comments":
 		path := stringArg(args, "comments_path")
 		if path == "" {
@@ -229,6 +322,10 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 		}
 		_, summary, err := app.NewReviewService().ReviewComments(path)
 		return summary, err
+	case "github_pr_comments":
+		return githubPRComments(ctx, p, args)
+	case "jira_import_from_mcp":
+		return jiraImportFromMCP(p, args)
 	case "status":
 		return status(ctx, p)
 	case "doctor":
@@ -264,6 +361,166 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (s *Server) startAsync(parent context.Context, name string, args map[string]any, run func(context.Context) (string, error)) string {
+	op, ctx := s.operations.start(parent, name)
+	go func() {
+		s.operations.update(op.ID, "running", 10, "started", "", "")
+		result, err := run(ctx)
+		if err != nil {
+			s.operations.update(op.ID, "failed", 100, "failed", "", err.Error())
+			return
+		}
+		s.operations.update(op.ID, "completed", 100, "completed", result, "")
+	}()
+	_ = args
+	return fmt.Sprintf("Operation started: %s\nName: %s\nStatus: running\nProgress: 10\nNext: call operation_status with operation_id=%q", op.ID, name, op.ID)
+}
+
+func (s *Server) operationStatus(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("operation_id is required")
+	}
+	op, ok := s.operations.get(id)
+	if !ok {
+		return "", fmt.Errorf("operation not found: %s", id)
+	}
+	data, err := json.MarshalIndent(op, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (s *Server) operationCancel(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("operation_id is required")
+	}
+	if !s.operations.cancel(id) {
+		return "", fmt.Errorf("operation not found or already completed: %s", id)
+	}
+	return "Operation cancelled: " + id, nil
+}
+
+func (s *operationStore) start(parent context.Context, name string) (*operation, context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gcLocked(time.Now())
+	s.seq++
+	base := context.WithoutCancel(parent)
+	ctx, cancel := context.WithTimeout(base, 30*time.Minute)
+	now := time.Now().UTC()
+	op := &operation{
+		ID:        fmt.Sprintf("op-%d-%d", now.UnixNano(), s.seq),
+		Name:      name,
+		Status:    "queued",
+		Progress:  0,
+		Stage:     "queued",
+		StartedAt: now,
+		UpdatedAt: now,
+		cancel:    cancel,
+	}
+	s.ops[op.ID] = op
+	return cloneOperation(op), ctx
+}
+
+func (s *operationStore) update(id, status string, progress int, stage, result, errText string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.ops[id]
+	if !ok {
+		return
+	}
+	if op.Status == "completed" || op.Status == "failed" || op.Status == "cancelled" {
+		return
+	}
+	if progress < op.Progress {
+		progress = op.Progress
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	op.Status = status
+	op.Progress = progress
+	op.Stage = stage
+	op.Result = result
+	op.Error = errText
+	op.UpdatedAt = time.Now().UTC()
+	if status == "completed" || status == "failed" || status == "cancelled" {
+		op.CompletedAt = op.UpdatedAt
+		if op.cancel != nil {
+			op.cancel()
+			op.cancel = nil
+		}
+	}
+}
+
+func (s *operationStore) get(id string) (operation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.ops[id]
+	if !ok {
+		return operation{}, false
+	}
+	return *cloneOperation(op), true
+}
+
+func (s *operationStore) cancel(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op, ok := s.ops[id]
+	if !ok || op.Status == "completed" || op.Status == "failed" || op.Status == "cancelled" {
+		return false
+	}
+	if op.cancel != nil {
+		op.cancel()
+		op.cancel = nil
+	}
+	now := time.Now().UTC()
+	op.Status = "cancelled"
+	op.Progress = 100
+	op.Stage = "cancelled"
+	op.UpdatedAt = now
+	op.CompletedAt = now
+	return true
+}
+
+func (s *operationStore) gcLocked(now time.Time) {
+	if len(s.ops) <= s.max {
+		return
+	}
+	for id, op := range s.ops {
+		if op.CompletedAt.IsZero() {
+			continue
+		}
+		if now.Sub(op.CompletedAt) > s.ttl {
+			delete(s.ops, id)
+		}
+	}
+	for len(s.ops) > s.max {
+		var oldestID string
+		var oldest time.Time
+		for id, op := range s.ops {
+			if oldestID == "" || op.UpdatedAt.Before(oldest) {
+				oldestID = id
+				oldest = op.UpdatedAt
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(s.ops, oldestID)
+	}
+}
+
+func cloneOperation(op *operation) *operation {
+	if op == nil {
+		return nil
+	}
+	cp := *op
+	cp.cancel = nil
+	return &cp
 }
 
 func startTask(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
@@ -386,6 +643,58 @@ func applyDomainMemory(ctx context.Context, p paths.ProjectPaths, proposalPath s
 		return "", err
 	}
 	return fmt.Sprintf("Domain memory applied: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d", domainMemoryPath(p), len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants)), nil
+}
+
+func githubPRComments(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	pr := stringArg(args, "pr")
+	if pr == "" {
+		return "", fmt.Errorf("pr is required")
+	}
+	result, err := app.ImportGitHubPRComments(ctx, app.GitHubPRCommentsOptions{
+		RepoRoot:  p.Root,
+		PR:        pr,
+		OwnerRepo: stringArg(args, "repo"),
+		OutputDir: filepath.Join(p.Root, ".ai", "reviews"),
+		Token:     stringArg(args, "token"),
+	})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "GitHub PR comments imported: %s\nRepository: %s\nPR: #%s\nComments: %d\nSource: %s\n", result.Path, result.OwnerRepo, result.PR, result.CommentCount, result.Source)
+	if boolArgDefault(args, "review", true) {
+		_, summary, err := app.NewReviewService().ReviewComments(result.Path)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("\n")
+		b.WriteString(summary)
+	}
+	return b.String(), nil
+}
+
+func jiraImportFromMCP(p paths.ProjectPaths, args map[string]any) (string, error) {
+	key := stringArg(args, "key")
+	if key == "" {
+		return "", fmt.Errorf("key is required")
+	}
+	result, err := app.ImportJiraIssueContent(app.JiraIssueContentOptions{
+		Key:                key,
+		SourceURL:          stringArg(args, "source_url"),
+		Summary:            stringArg(args, "summary"),
+		Description:        stringArg(args, "description"),
+		AcceptanceCriteria: stringSliceArg(args, "acceptance_criteria"),
+		Comments:           stringSliceArg(args, "comments"),
+		IssueType:          stringArg(args, "issue_type"),
+		Status:             stringArg(args, "status"),
+		Priority:           stringArg(args, "priority"),
+		Labels:             stringSliceArg(args, "labels"),
+		OutputDir:          filepath.Join(p.Root, ".ai", "tasks"),
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Jira task imported from MCP content: %s\nTask ID: %s\nNext: call prepare_context_async with task_path=%q and budget=%q.", result.Path, result.TaskID, result.Path, app.BudgetCavernicola), nil
 }
 
 func getSystemMemory(ctx context.Context, p paths.ProjectPaths, topic, area string) (string, error) {
@@ -527,6 +836,32 @@ func boolArgDefault(args map[string]any, key string, fallback bool) bool {
 		return v
 	}
 	return fallback
+}
+
+func stringSliceArg(args map[string]any, key string) []string {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if strings.TrimSpace(values) == "" {
+			return nil
+		}
+		return []string{values}
+	default:
+		return nil
+	}
 }
 
 func yesNo(v bool) string {

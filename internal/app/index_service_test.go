@@ -27,6 +27,64 @@ func TestIndexIncrementalSkipsGraphWhenHashesUnchanged(t *testing.T) {
 	if graph.saved {
 		t.Fatal("expected graph write to be skipped")
 	}
+	if graph.savedChanges {
+		t.Fatal("expected incremental graph write to be skipped")
+	}
+}
+
+func TestIndexIncrementalSavesOnlyChangedGraphFiles(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	idx := domain.CodeIndex{
+		Repository: domain.Repository{Root: "/repo", Name: "repo", IndexedAt: now},
+		Files: []domain.IndexedFile{
+			{Path: "internal/domain/user.go", Hash: "new"},
+			{Path: "internal/domain/order.go", Hash: "same"},
+		},
+	}
+	meta := &fakeMetaStore{files: []domain.IndexedFile{
+		{Path: "internal/domain/user.go", Hash: "old"},
+		{Path: "internal/domain/order.go", Hash: "same"},
+	}}
+	graph := &fakeGraphStore{}
+
+	result, err := NewIndexService(fakeIndexer{idx: idx}, meta, graph).IndexWithOptions(ctx, "/repo", IndexOptions{Incremental: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Unchanged {
+		t.Fatal("expected changed incremental result")
+	}
+	if graph.saved {
+		t.Fatal("expected full graph save to be skipped")
+	}
+	if !graph.savedChanges {
+		t.Fatal("expected incremental graph save")
+	}
+	if len(graph.changedPaths) != 1 || graph.changedPaths[0] != "internal/domain/user.go" {
+		t.Fatalf("unexpected changed paths: %#v", graph.changedPaths)
+	}
+}
+
+func TestIndexFirstIncrementalRunUsesFullGraphSave(t *testing.T) {
+	ctx := context.Background()
+	idx := domain.CodeIndex{
+		Repository: domain.Repository{Root: "/repo", Name: "repo", IndexedAt: time.Now()},
+		Files:      []domain.IndexedFile{{Path: "main.go", Hash: "abc"}},
+	}
+	meta := &fakeMetaStore{}
+	graph := &fakeGraphStore{}
+
+	_, err := NewIndexService(fakeIndexer{idx: idx}, meta, graph).IndexWithOptions(ctx, "/repo", IndexOptions{Incremental: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.saved {
+		t.Fatal("expected first incremental run to populate the full graph")
+	}
+	if graph.savedChanges {
+		t.Fatal("did not expect incremental graph save without previous file metadata")
+	}
 }
 
 type fakeIndexer struct {
@@ -36,12 +94,19 @@ type fakeIndexer struct {
 func (f fakeIndexer) Index(context.Context, string) (domain.CodeIndex, error) { return f.idx, nil }
 
 type fakeGraphStore struct {
-	saved bool
+	saved        bool
+	savedChanges bool
+	changedPaths []string
 }
 
 func (f *fakeGraphStore) Ping(context.Context) error { return nil }
 func (f *fakeGraphStore) SaveIndex(context.Context, domain.CodeIndex) error {
 	f.saved = true
+	return nil
+}
+func (f *fakeGraphStore) SaveIndexChanges(_ context.Context, _ domain.CodeIndex, paths []string) error {
+	f.savedChanges = true
+	f.changedPaths = append([]string(nil), paths...)
 	return nil
 }
 func (f *fakeGraphStore) Stats(context.Context) (domain.GraphStats, error) {

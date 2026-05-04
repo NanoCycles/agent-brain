@@ -22,6 +22,20 @@ type JiraImportOptions struct {
 	Offline   bool
 }
 
+type JiraIssueContentOptions struct {
+	Key                string
+	SourceURL          string
+	Summary            string
+	Description        string
+	AcceptanceCriteria []string
+	Comments           []string
+	IssueType          string
+	Status             string
+	Priority           string
+	Labels             []string
+	OutputDir          string
+}
+
 type JiraImportResult struct {
 	TaskID  string
 	Path    string
@@ -74,6 +88,35 @@ func ImportJiraIssue(ctx context.Context, opts JiraImportOptions) (JiraImportRes
 		return JiraImportResult{}, err
 	}
 	return JiraImportResult{TaskID: key, Path: path, Offline: offline}, nil
+}
+
+func ImportJiraIssueContent(opts JiraIssueContentOptions) (JiraImportResult, error) {
+	key, _ := parseJiraKeyAndBase(opts.Key)
+	if key == "" {
+		return JiraImportResult{}, fmt.Errorf("jira issue key is required")
+	}
+	if opts.OutputDir == "" {
+		opts.OutputDir = filepath.Join(".ai", "tasks")
+	}
+	body := renderJiraTaskFromContent(opts, key)
+	if err := os.MkdirAll(opts.OutputDir, 0o755); err != nil {
+		return JiraImportResult{}, err
+	}
+	path := filepath.Join(opts.OutputDir, key+".md")
+	if _, err := os.Stat(path); err == nil {
+		backup := path + ".bak-agent-brain-" + time.Now().UTC().Format("20060102150405")
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return JiraImportResult{}, readErr
+		}
+		if err := os.WriteFile(backup, data, 0o644); err != nil {
+			return JiraImportResult{}, err
+		}
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return JiraImportResult{}, err
+	}
+	return JiraImportResult{TaskID: key, Path: path, Offline: false}, nil
 }
 
 type jiraIssue struct {
@@ -139,6 +182,79 @@ Labels: %s
 - Preserve public contracts unless explicit approval exists.
 - Add or adjust focused tests for the changed behavior.
 `, issue.Key, issue.Fields.Summary, strings.TrimRight(baseURL, "/"), issue.Key, issue.Fields.IssueType.Name, issue.Fields.Status.Name, issue.Fields.Priority.Name, strings.Join(issue.Fields.Labels, ", "), desc)
+}
+
+func renderJiraTaskFromContent(opts JiraIssueContentOptions, key string) string {
+	source := strings.TrimSpace(opts.SourceURL)
+	if source == "" {
+		source = key
+	}
+	summary := strings.TrimSpace(opts.Summary)
+	if summary == "" {
+		summary = key
+	}
+	description := strings.TrimSpace(opts.Description)
+	if description == "" {
+		description = "No Jira description was provided by the agent."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s: %s\n\n", key, summary)
+	fmt.Fprintf(&b, "Source: %s\n", source)
+	writeOptionalTaskMeta(&b, "Type", opts.IssueType)
+	writeOptionalTaskMeta(&b, "Status", opts.Status)
+	writeOptionalTaskMeta(&b, "Priority", opts.Priority)
+	if len(opts.Labels) > 0 {
+		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(cleanList(opts.Labels), ", "))
+	}
+	b.WriteString("\n## Context\n")
+	b.WriteString(description)
+	b.WriteString("\n\n## Acceptance Criteria\n")
+	criteria := cleanList(opts.AcceptanceCriteria)
+	if len(criteria) == 0 {
+		criteria = []string{
+			"Confirm expected behavior from Jira and existing business rules.",
+			"Preserve public contracts unless explicit approval exists.",
+			"Add or adjust focused tests for the changed behavior.",
+		}
+	}
+	for _, item := range criteria {
+		fmt.Fprintf(&b, "- %s\n", item)
+	}
+	comments := cleanList(opts.Comments)
+	if len(comments) > 0 {
+		b.WriteString("\n## Jira Comments\n")
+		for _, comment := range comments {
+			fmt.Fprintf(&b, "- %s\n", comment)
+		}
+	}
+	b.WriteString("\n## Agent Import Notes\n")
+	b.WriteString("- Imported through agent-brain from Jira MCP-provided content.\n")
+	b.WriteString("- Source code remains the source of truth; use context pack before editing.\n")
+	return b.String()
+}
+
+func writeOptionalTaskMeta(b *strings.Builder, key, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		fmt.Fprintf(b, "%s: %s\n", key, value)
+	}
+}
+
+func cleanList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func renderJiraSkeleton(key, baseURL string) string {

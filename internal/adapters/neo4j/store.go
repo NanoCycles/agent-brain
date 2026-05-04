@@ -32,38 +32,122 @@ func (s *Store) SaveIndex(ctx context.Context, index domain.CodeIndex) error {
 		if _, err := tx.Run(ctx, `match (n {repo:$repo}) detach delete n`, map[string]any{"repo": index.Repository.Root}); err != nil {
 			return nil, err
 		}
-		if _, err := tx.Run(ctx, `merge (r:Repository {path:$path}) set r.name=$name, r.repo=$repo, r.commit_sha=$commit, r.indexed_at=$indexed_at, r.source='agent-brain', r.confidence=1.0`,
-			map[string]any{"path": index.Repository.Root, "name": index.Repository.Name, "repo": index.Repository.Root, "commit": index.Repository.CommitSHA, "indexed_at": index.Repository.IndexedAt}); err != nil {
+		if err := writeIndex(ctx, tx, index, index.Nodes, index.Relations); err != nil {
 			return nil, err
-		}
-		for _, n := range index.Nodes {
-			q := fmt.Sprintf(`merge (n:%s {repo:$repo, name:$name, path:$path}) set n.package=$package, n.layer=$layer, n.commit_sha=$commit, n.indexed_at=$indexed_at, n.source=$source, n.confidence=$confidence, n.operation=$operation, n.evidence=$evidence`, n.Label)
-			params := map[string]any{
-				"repo": n.Repo, "name": n.Name, "path": n.Path, "package": n.Package, "layer": n.Layer,
-				"commit": n.CommitSHA, "indexed_at": n.IndexedAt, "source": n.Source, "confidence": n.Confidence,
-				"operation": "", "evidence": "",
-			}
-			if n.Properties != nil {
-				if op, ok := n.Properties["operation"].(string); ok {
-					params["operation"] = op
-				}
-				if evidence, ok := n.Properties["evidence"].(string); ok {
-					params["evidence"] = evidence
-				}
-			}
-			if _, err := tx.Run(ctx, q, params); err != nil {
-				return nil, err
-			}
-		}
-		for _, rel := range index.Relations {
-			q := fmt.Sprintf(`match (a:%s {repo:$repo, path:$from}), (b:%s {repo:$repo, path:$to}) merge (a)-[:%s]->(b)`, rel.FromLabel, rel.ToLabel, rel.Type)
-			if _, err := tx.Run(ctx, q, map[string]any{"repo": rel.Repo, "from": rel.FromKey, "to": rel.ToKey}); err != nil {
-				return nil, err
-			}
 		}
 		return nil, nil
 	})
 	return err
+}
+
+func (s *Store) SaveIndexChanges(ctx context.Context, index domain.CodeIndex, changedPaths []string) error {
+	paths := normalizedPaths(changedPaths)
+	if len(paths) == 0 {
+		return nil
+	}
+	nodes, rels := graphChangesForPaths(index, paths)
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		if _, err := tx.Run(ctx, `
+			match (n {repo:$repo})
+			where any(p in $paths where n.path = p or n.path starts with p + '#')
+			detach delete n`,
+			map[string]any{"repo": index.Repository.Root, "paths": paths}); err != nil {
+			return nil, err
+		}
+		if err := writeIndex(ctx, tx, index, nodes, rels); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	return err
+}
+
+func writeIndex(ctx context.Context, tx neo4j.ManagedTransaction, index domain.CodeIndex, nodes []domain.GraphNode, rels []domain.GraphRelationship) error {
+	if _, err := tx.Run(ctx, `merge (r:Repository {path:$path}) set r.name=$name, r.repo=$repo, r.commit_sha=$commit, r.indexed_at=$indexed_at, r.source='agent-brain', r.confidence=1.0`,
+		map[string]any{"path": index.Repository.Root, "name": index.Repository.Name, "repo": index.Repository.Root, "commit": index.Repository.CommitSHA, "indexed_at": index.Repository.IndexedAt}); err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		q := fmt.Sprintf(`merge (n:%s {repo:$repo, name:$name, path:$path}) set n.package=$package, n.layer=$layer, n.commit_sha=$commit, n.indexed_at=$indexed_at, n.source=$source, n.confidence=$confidence, n.operation=$operation, n.evidence=$evidence`, n.Label)
+		params := map[string]any{
+			"repo": n.Repo, "name": n.Name, "path": n.Path, "package": n.Package, "layer": n.Layer,
+			"commit": n.CommitSHA, "indexed_at": n.IndexedAt, "source": n.Source, "confidence": n.Confidence,
+			"operation": "", "evidence": "",
+		}
+		if n.Properties != nil {
+			if op, ok := n.Properties["operation"].(string); ok {
+				params["operation"] = op
+			}
+			if evidence, ok := n.Properties["evidence"].(string); ok {
+				params["evidence"] = evidence
+			}
+		}
+		if _, err := tx.Run(ctx, q, params); err != nil {
+			return err
+		}
+	}
+	for _, rel := range rels {
+		q := fmt.Sprintf(`match (a:%s {repo:$repo, path:$from}), (b:%s {repo:$repo, path:$to}) merge (a)-[:%s]->(b)`, rel.FromLabel, rel.ToLabel, rel.Type)
+		if _, err := tx.Run(ctx, q, map[string]any{"repo": rel.Repo, "from": rel.FromKey, "to": rel.ToKey}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func graphChangesForPaths(index domain.CodeIndex, changedPaths []string) ([]domain.GraphNode, []domain.GraphRelationship) {
+	pathSet := map[string]struct{}{}
+	for _, path := range changedPaths {
+		pathSet[path] = struct{}{}
+	}
+	var nodes []domain.GraphNode
+	for _, n := range index.Nodes {
+		if nodeBelongsToChangedPath(n, pathSet) || n.Label == "Package" || n.Label == "Layer" {
+			nodes = append(nodes, n)
+		}
+	}
+	var rels []domain.GraphRelationship
+	for _, rel := range index.Relations {
+		if keyBelongsToChangedPath(rel.FromKey, pathSet) || keyBelongsToChangedPath(rel.ToKey, pathSet) {
+			rels = append(rels, rel)
+		}
+	}
+	return nodes, rels
+}
+
+func nodeBelongsToChangedPath(node domain.GraphNode, paths map[string]struct{}) bool {
+	if node.Label == "Repository" {
+		return false
+	}
+	return keyBelongsToChangedPath(node.Path, paths)
+}
+
+func keyBelongsToChangedPath(key string, paths map[string]struct{}) bool {
+	for path := range paths {
+		if key == path || strings.HasPrefix(key, path+"#") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedPaths(paths []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, path := range paths {
+		path = strings.ReplaceAll(strings.TrimSpace(path), `\`, `/`)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }
 
 func (s *Store) Stats(ctx context.Context) (domain.GraphStats, error) {

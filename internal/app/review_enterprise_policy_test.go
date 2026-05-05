@@ -344,6 +344,33 @@ func Review(text string) bool {
 	}
 }
 
+func TestEnterpriseDiffFindingsAllowsGitHubTokenFromEnvAndSafeGHArgs(t *testing.T) {
+	root := t.TempDir()
+	path := "internal/app/github_review_service.go"
+	writeReviewFixture(t, root, path, `package app
+
+import (
+	"context"
+	"net/http"
+	"os"
+	"os/exec"
+)
+
+func Import(ctx context.Context, ownerRepo, pr, body string) error {
+	token := os.Getenv("GITHUB_TOKEN")
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	_ = exec.CommandContext(ctx, "gh", "api", ownerRepo, "-f", "body="+body)
+	return nil
+}`)
+	findings := enterpriseDiffFindings(root, path, `token := os.Getenv("GITHUB_TOKEN")
+req.Header.Set("Authorization", "Bearer "+token)
+_ = exec.CommandContext(ctx, "gh", "api", ownerRepo, "-f", "body="+body)`)
+	if len(findings) != 0 {
+		t.Fatalf("expected env/header token and argument values to be allowed, got %#v", findings)
+	}
+}
+
 func TestEnterpriseDiffFindingsEventChangesRequireIdempotency(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join("internal", "adapters", "events", "consumer.go")

@@ -17,11 +17,12 @@ import (
 )
 
 type GitHubPRCommentsOptions struct {
-	RepoRoot  string
-	PR        string
-	OwnerRepo string
-	OutputDir string
-	Token     string
+	RepoRoot    string
+	PR          string
+	OwnerRepo   string
+	OutputDir   string
+	Token       string
+	PostSummary bool
 }
 
 type GitHubPRCommentsResult struct {
@@ -30,6 +31,7 @@ type GitHubPRCommentsResult struct {
 	OwnerRepo    string
 	CommentCount int
 	Source       string
+	PostedURL    string
 }
 
 type githubComment struct {
@@ -86,7 +88,58 @@ func ImportGitHubPRComments(ctx context.Context, opts GitHubPRCommentsOptions) (
 	if err := os.WriteFile(path, []byte(renderGitHubCommentsMarkdown(ownerRepo, pr, comments, source)), 0o644); err != nil {
 		return GitHubPRCommentsResult{}, err
 	}
-	return GitHubPRCommentsResult{Path: path, PR: pr, OwnerRepo: ownerRepo, CommentCount: len(comments), Source: source}, nil
+	result := GitHubPRCommentsResult{Path: path, PR: pr, OwnerRepo: ownerRepo, CommentCount: len(comments), Source: source}
+	if opts.PostSummary {
+		postedURL, err := PostGitHubPRComment(ctx, GitHubPRCommentOptions{
+			RepoRoot:  opts.RepoRoot,
+			PR:        pr,
+			OwnerRepo: ownerRepo,
+			Token:     token,
+			Body:      renderGitHubImportSummary(ownerRepo, pr, len(comments), path),
+		})
+		if err != nil {
+			return GitHubPRCommentsResult{}, err
+		}
+		result.PostedURL = postedURL
+	}
+	return result, nil
+}
+
+type GitHubPRCommentOptions struct {
+	RepoRoot  string
+	PR        string
+	OwnerRepo string
+	Token     string
+	Body      string
+}
+
+func PostGitHubPRComment(ctx context.Context, opts GitHubPRCommentOptions) (string, error) {
+	pr := normalizePRNumber(opts.PR)
+	if pr == "" {
+		return "", fmt.Errorf("pr is required")
+	}
+	ownerRepo := opts.OwnerRepo
+	if ownerRepo == "" {
+		ownerRepo = detectGitHubOwnerRepo(ctx, opts.RepoRoot)
+	}
+	if ownerRepo == "" {
+		return "", fmt.Errorf("github owner/repo is required; pass --repo owner/name or configure git remote")
+	}
+	body := strings.TrimSpace(opts.Body)
+	if body == "" {
+		return "", fmt.Errorf("comment body is required")
+	}
+	token := opts.Token
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token != "" {
+		return postGitHubCommentHTTP(ctx, ownerRepo, pr, token, body)
+	}
+	return postGitHubCommentGH(ctx, ownerRepo, pr, body)
 }
 
 func normalizePRNumber(raw string) string {
@@ -182,6 +235,33 @@ func fetchGitHubCommentEndpointHTTP(ctx context.Context, endpoint, token string)
 	return comments, nil
 }
 
+func postGitHubCommentHTTP(ctx context.Context, ownerRepo, pr, token, body string) (string, error) {
+	payload, _ := json.Marshal(map[string]string{"body": body})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://api.github.com/repos/%s/issues/%s/comments", ownerRepo, pr), bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github PR comment post failed: %s", resp.Status)
+	}
+	var row struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&row); err != nil {
+		return "", err
+	}
+	return row.HTMLURL, nil
+}
+
 func fetchGitHubCommentsGH(ctx context.Context, ownerRepo, pr string) ([]githubComment, error) {
 	var comments []githubComment
 	for _, endpoint := range []string{
@@ -200,6 +280,22 @@ func fetchGitHubCommentsGH(ctx context.Context, ownerRepo, pr string) ([]githubC
 		comments = append(comments, part...)
 	}
 	return comments, nil
+}
+
+func postGitHubCommentGH(ctx context.Context, ownerRepo, pr, body string) (string, error) {
+	endpoint := strings.Join([]string{"repos", ownerRepo, "issues", pr, "comments"}, "/")
+	cmd := exec.CommandContext(ctx, "gh", "api", endpoint, "-f", "body="+body)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("github PR comment post requires GITHUB_TOKEN/GH_TOKEN or authenticated gh CLI: %w", err)
+	}
+	var row struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&row); err != nil {
+		return "", err
+	}
+	return row.HTMLURL, nil
 }
 
 func decodeGitHubComments(data []byte) ([]githubComment, error) {
@@ -221,6 +317,17 @@ func decodeGitHubComments(data []byte) ([]githubComment, error) {
 		comments = append(comments, githubComment{Author: row.User.Login, Body: row.Body, Path: row.Path, Line: row.Line, URL: row.HTMLURL, CreatedAt: row.CreatedAt})
 	}
 	return comments, nil
+}
+
+func renderGitHubImportSummary(ownerRepo, pr string, comments int, path string) string {
+	return fmt.Sprintf(`agent-brain imported PR review comments for agent repair.
+
+- Repository: %s
+- PR: #%s
+- Imported comments: %d
+- Local review file: %s
+
+Next agent step: run agent-brain review-comments --file %s, fix gated findings first, then run focused tests and agent-brain review-diff.`, ownerRepo, pr, comments, path, path)
 }
 
 func renderGitHubCommentsMarkdown(ownerRepo, pr string, comments []githubComment, source string) string {

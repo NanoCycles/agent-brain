@@ -563,7 +563,7 @@ func jiraCmd(ctx context.Context) *cobra.Command {
 func githubCmd(ctx context.Context) *cobra.Command {
 	root := &cobra.Command{Use: "github", Short: "Import GitHub PR review context for agents"}
 	var pr, repo, out, token string
-	var review bool
+	var review, postSummary bool
 	comments := &cobra.Command{
 		Use:   "review-comments",
 		Short: "Import GitHub PR comments into .ai/reviews and optionally build an agent repair plan",
@@ -579,16 +579,20 @@ func githubCmd(ctx context.Context) *cobra.Command {
 				out = filepath.Join(p.Root, ".ai", "reviews")
 			}
 			result, err := app.ImportGitHubPRComments(ctx, app.GitHubPRCommentsOptions{
-				RepoRoot:  p.Root,
-				PR:        pr,
-				OwnerRepo: repo,
-				OutputDir: out,
-				Token:     token,
+				RepoRoot:    p.Root,
+				PR:          pr,
+				OwnerRepo:   repo,
+				OutputDir:   out,
+				Token:       token,
+				PostSummary: postSummary,
 			})
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "GitHub PR comments imported: %s\nRepository: %s\nPR: #%s\nComments: %d\nSource: %s\n", result.Path, result.OwnerRepo, result.PR, result.CommentCount, result.Source)
+			if result.PostedURL != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Posted summary: %s\n", result.PostedURL)
+			}
 			if review {
 				_, summary, err := app.NewReviewService().ReviewComments(result.Path)
 				if err != nil {
@@ -605,6 +609,7 @@ func githubCmd(ctx context.Context) *cobra.Command {
 	comments.Flags().StringVar(&out, "out", "", "review comments output directory")
 	comments.Flags().StringVar(&token, "token", "", "GitHub token; defaults to GITHUB_TOKEN or GH_TOKEN")
 	comments.Flags().BoolVar(&review, "review", true, "run review-comments after import")
+	comments.Flags().BoolVar(&postSummary, "post-summary", false, "post an agent-brain import summary comment back to the PR")
 	root.AddCommand(comments)
 	return root
 }
@@ -649,7 +654,7 @@ func indexCmd(ctx context.Context) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&repo, "repo", ".", "repository path")
-	c.Flags().BoolVar(&incremental, "incremental", false, "skip graph rewrite when indexed file hashes did not change")
+	c.Flags().BoolVar(&incremental, "incremental", true, "update only changed/deleted files in Neo4j when prior metadata exists")
 	return c
 }
 

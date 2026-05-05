@@ -60,6 +60,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if !strings.Contains(lines[1], "agent_start_async") || !strings.Contains(lines[1], "bootstrap_domain_memory") {
 		t.Fatalf("tools/list response does not include agent workflow tools: %s", lines[1])
 	}
+	if !strings.Contains(lines[1], "github_pr_comments_async") {
+		t.Fatalf("tools/list response does not include GitHub async tool: %s", lines[1])
+	}
 }
 
 func TestUnknownToolReturnsToolError(t *testing.T) {
@@ -79,8 +82,9 @@ func TestUnknownToolReturnsToolError(t *testing.T) {
 func TestAsyncOperationStatus(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
 	done := make(chan struct{})
-	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context) (string, error) {
+	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
 		defer close(done)
+		progress(50, "halfway")
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -102,11 +106,14 @@ func TestAsyncOperationStatus(t *testing.T) {
 	if !strings.Contains(status, `"status": "completed"`) || !strings.Contains(status, `"result": "ok"`) {
 		t.Fatalf("unexpected operation status: %s", status)
 	}
+	if !strings.Contains(status, `"stage": "halfway"`) {
+		t.Fatalf("expected detailed operation progress event: %s", status)
+	}
 }
 
 func TestAsyncOperationCancel(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
-	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context) (string, error) {
+	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
@@ -125,10 +132,10 @@ func TestAsyncOperationCancel(t *testing.T) {
 
 func TestOperationListFiltersByRepoRoot(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
-	one := operationIDFromText(t, server.startAsync(context.Background(), "one", "C:\\repo-one", nil, func(ctx context.Context) (string, error) {
+	one := operationIDFromText(t, server.startAsync(context.Background(), "one", "C:\\repo-one", nil, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
 		return "one", nil
 	}))
-	_ = operationIDFromText(t, server.startAsync(context.Background(), "two", "C:\\repo-two", nil, func(ctx context.Context) (string, error) {
+	_ = operationIDFromText(t, server.startAsync(context.Background(), "two", "C:\\repo-two", nil, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
 		return "two", nil
 	}))
 	deadline := time.Now().Add(time.Second)

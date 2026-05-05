@@ -520,7 +520,7 @@ func secretAndInjectionFindings(path, text, codeText, originalPath string) []dom
 	if reviewTextContainsAny(codeText, "fmt.sprintf", "+ \"select", "+ \" update", "+ \"insert", "+ \"delete", "where \" +", "order by \" +") && reviewTextContainsAny(path, "repository", "store", "dao", "postgres", "mysql", "sqlite", "query") {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible SQL injection", Message: "Dynamic SQL construction in persistence code should use parameters/query builders and validate identifiers.", Path: originalPath})
 	}
-	if reviewTextContainsAny(codeText, "exec.command(", "exec.commandcontext(") && reviewTextContainsAny(codeText, "+", "fmt.sprintf") {
+	if containsRiskyCommandConstruction(text) {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible command injection", Message: "Command arguments must not be built from concatenated or formatted untrusted input.", Path: originalPath})
 	}
 	if containsSensitiveLoggingRisk(text, codeText) {
@@ -577,7 +577,13 @@ func containsHardcodedSecretAssignment(text, codeText string) bool {
 		if !reviewTextContainsAny(codeLine, "=", ":=", "const ", "var ") {
 			continue
 		}
+		if strings.Contains(codeLine, "==") || strings.Contains(codeLine, "!=") {
+			continue
+		}
 		if strings.Contains(codeLine, "reviewtextcontainsany") || strings.Contains(codeLine, "strings.contains") {
+			continue
+		}
+		if strings.Contains(codeLine, "os.getenv(") || strings.Contains(codeLine, ".header.set(") {
 			continue
 		}
 		rawLine := codeLine
@@ -585,6 +591,19 @@ func containsHardcodedSecretAssignment(text, codeText string) bool {
 			rawLine = rawLines[i]
 		}
 		if reviewTextContainsAny(rawLine, `"`, "`") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRiskyCommandConstruction(codeText string) bool {
+	for _, line := range strings.Split(codeText, "\n") {
+		line = strings.TrimSpace(line)
+		if !reviewTextContainsAny(line, "exec.command(", "exec.commandcontext(") {
+			continue
+		}
+		if strings.Contains(line, "fmt.sprintf") || reviewTextContainsAny(line, `"sh", "-c"`, `"bash", "-c"`, `"cmd", "/c"`, `"powershell", "-command"`) {
 			return true
 		}
 	}
@@ -780,7 +799,11 @@ func renderDiffSummary(files []string, findings []domain.Finding, relatedTests [
 	if len(findings) > 0 {
 		b.WriteString("Findings:\n")
 		for _, f := range findings {
-			fmt.Fprintf(&b, "- [%s] %s: %s\n", f.Severity, f.Title, f.Message)
+			if f.Path != "" {
+				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", f.Severity, f.Title, f.Path, f.Message)
+			} else {
+				fmt.Fprintf(&b, "- [%s] %s: %s\n", f.Severity, f.Title, f.Message)
+			}
 		}
 	}
 	return b.String()

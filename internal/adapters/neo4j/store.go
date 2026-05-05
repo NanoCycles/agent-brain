@@ -59,6 +59,9 @@ func (s *Store) SaveIndexChanges(ctx context.Context, index domain.CodeIndex, ch
 		if err := writeIndex(ctx, tx, index, nodes, rels); err != nil {
 			return nil, err
 		}
+		if err := cleanupIncrementalOrphans(ctx, tx, index.Repository.Root); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	})
 	return err
@@ -93,6 +96,18 @@ func writeIndex(ctx context.Context, tx neo4j.ManagedTransaction, index domain.C
 		if _, err := tx.Run(ctx, q, map[string]any{"repo": rel.Repo, "from": rel.FromKey, "to": rel.ToKey}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func cleanupIncrementalOrphans(ctx context.Context, tx neo4j.ManagedTransaction, repoRoot string) error {
+	if _, err := tx.Run(ctx, `
+		match (n {repo:$repo})
+		where any(label in labels(n) where label in ['Package','Layer'])
+		  and not (n)--()
+		detach delete n`,
+		map[string]any{"repo": repoRoot}); err != nil {
+		return err
 	}
 	return nil
 }

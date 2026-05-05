@@ -18,6 +18,7 @@ type AgentWorkflowOptions struct {
 	NoIndex         bool
 	BootstrapMemory bool
 	MemoryArea      string
+	Progress        ProgressFunc
 }
 
 type AgentWorkflowResult struct {
@@ -45,12 +46,16 @@ func (s *AgentWorkflowService) Start(ctx context.Context, p paths.ProjectPaths, 
 		Fast:     opts.Fast,
 		NoIndex:  opts.NoIndex,
 		Budget:   opts.Budget,
+		Progress: opts.Progress,
 	})
 	if err != nil {
 		return result, err
 	}
 	result.Prepare = prep
 	if opts.BootstrapMemory || domainMemoryAppearsEmpty(ctx, s.meta, p) {
+		if opts.Progress != nil {
+			opts.Progress(96, "proposing domain memory")
+		}
 		taskPath := opts.TaskPath
 		if taskPath == "" {
 			taskPath = prep.Pack.TaskID

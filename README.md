@@ -239,9 +239,11 @@ Recommended agent flow:
 5. Use `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
 6. Call `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
-The MCP server exposes these tools: `agent_start`, `agent_start_async`, `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `bootstrap_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+Async operations keep a detailed event trail. Agents should poll `operation_status` and read the `events` array instead of retrying blindly on long repository indexes.
 
-Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
+The MCP server exposes these tools: `agent_start`, `agent_start_async`, `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `review_comments`, `github_pr_comments`, `github_pr_comments_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `bootstrap_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+
+Project information updates when `prepare_context` or `agent_start` runs, unless `no_index` is true. Indexing uses per-file hashes and updates Neo4j incrementally when prior metadata exists: changed/deleted file subgraphs are replaced precisely, stale SQLite rows are removed, and unchanged file graph data is left intact. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
 
 If an MCP host launches the server outside the project folder, pass `repo_root` in tool calls or rerun the installer from inside the target repository. Installers bind `AGENT_BRAIN_REPO_ROOT` to the current project so each local repo keeps its own SQLite database and Neo4j container/ports.
 
@@ -287,6 +289,21 @@ agent-brain impact --topic "rest auth route validation" --budget cavernicola
 ```
 
 Expected result for a Node/TS repo with `package.json`: `MainLanguage=javascript/typescript`, plus REST/GraphQL/Events/Persistence/Tests capabilities when evidence exists.
+
+## Incremental Indexing
+
+`agent-brain index --repo .` uses incremental graph updates by default after the first index. The CLI still parses the repository to compute the current file set, but Neo4j writes are scoped to changed or deleted files:
+
+- changed files: old file-owned nodes are removed, then the new file subgraph is written;
+- deleted files: the stale file subgraph is removed from Neo4j and SQLite;
+- unchanged files: metadata and graph nodes are preserved;
+- orphan package/layer nodes are cleaned after incremental writes.
+
+Run a full graph rewrite only when you intentionally want to rebuild everything:
+
+```sh
+agent-brain index --repo . --incremental=false
+```
 
 ## Testing In A Real Project
 
@@ -381,11 +398,13 @@ Do not use `neo4j+s://localhost:7474` for local agent-brain containers. `7474` i
 - `agent-brain mcp install-copilot`: installs workspace MCP config into `.vscode/mcp.json` for GitHub Copilot.
 - `agent-brain jira import AK-123`: imports a Jira issue into `.ai/tasks/AK-123.md`.
 - `agent-brain index --repo .`: indexes a Go repository into SQLite and Neo4j.
-- `agent-brain index --repo . --incremental`: skips graph rewrite when indexed file hashes did not change.
+- `agent-brain index --repo . --incremental=false`: forces a full Neo4j graph rewrite instead of per-file incremental update.
 - `agent-brain context --task .ai/tasks/TICKET.md`: writes Markdown and JSON context packs.
 - `agent-brain impact --topic "text"`: searches graph impact.
 - `agent-brain review-plan --plan path/to/plan.md`: reviews an agent plan.
 - `agent-brain review-comments --file review-comments.md`: turns external review comments into a prioritized agent repair plan.
+- `agent-brain github review-comments --pr 123 --repo owner/name`: imports GitHub PR comments into `.ai/reviews` and runs the repair planner.
+- `agent-brain github review-comments --pr 123 --post-summary`: imports comments and posts an agent-brain summary back to the PR.
 - `agent-brain review-diff`: reviews the current git diff without modifying files.
 - `agent-brain memory-proposal --task .ai/tasks/TICKET.md`: writes a structured memory proposal.
 - `agent-brain memory-apply <proposal.yml>`: validates and applies memory after confirmation.
@@ -426,6 +445,15 @@ Implementation memory is useful for historical task learning. Domain memory is m
 ```sh
 agent-brain review-comments --file .ai/reviews/TICKET-review-comments.md
 ```
+
+For GitHub pull requests, import comments directly:
+
+```sh
+agent-brain github review-comments --pr 123 --repo owner/name
+agent-brain github review-comments --pr https://github.com/owner/name/pull/123 --post-summary
+```
+
+The MCP equivalents are `github_pr_comments` and `github_pr_comments_async`. They require `GITHUB_TOKEN`/`GH_TOKEN` or an authenticated `gh` CLI. `--post-summary` / `post_summary=true` posts only an operational summary, not source code or secrets.
 
 This is intended for GitHub comments from Claude, Copilot, human reviewers, or internal review bots. The agent should fix critical/high findings first, run focused tests, then call `review-diff` again.
 

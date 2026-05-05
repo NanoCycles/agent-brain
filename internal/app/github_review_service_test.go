@@ -51,3 +51,12 @@ func TestRenderGitHubCommentsMarkdownIsReviewCommentsCompatible(t *testing.T) {
 		t.Fatalf("expected findings, got %#v", report.Findings)
 	}
 }
+
+func TestRenderGitHubImportSummaryIsActionable(t *testing.T) {
+	body := renderGitHubImportSummary("NanoCycles/agent-brain", "42", 3, ".ai/reviews/PR-42-comments.md")
+	for _, want := range []string{"Imported comments: 3", "review-comments --file", "review-diff"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %q in summary: %s", want, body)
+		}
+	}
+}

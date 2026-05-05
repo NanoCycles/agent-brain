@@ -66,13 +66,41 @@ func (s *Store) SaveIndexedFiles(ctx context.Context, repoRoot string, files []d
 		return err
 	}
 	defer tx.Rollback()
+	current := make(map[string]struct{}, len(files))
 	for _, f := range files {
+		current[f.Path] = struct{}{}
 		symbols, _ := json.Marshal(map[string]any{"structs": f.Structs, "interfaces": f.Interfaces, "functions": f.Functions, "methods": f.Methods, "tests": f.Tests, "contracts": f.Contracts, "calls": f.Calls})
 		imports, _ := json.Marshal(f.Imports)
 		_, err := tx.ExecContext(ctx, `insert into indexed_files(repo_root,path,package,layer,hash,indexed_at,symbols_json,imports_json) values(?,?,?,?,?,?,?,?)
 			on conflict(repo_root,path) do update set package=excluded.package, layer=excluded.layer, hash=excluded.hash, indexed_at=excluded.indexed_at, symbols_json=excluded.symbols_json, imports_json=excluded.imports_json`,
 			repoRoot, f.Path, f.Package, f.Layer, f.Hash, f.IndexedAt.Format(time.RFC3339), string(symbols), string(imports))
 		if err != nil {
+			return err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `select path from indexed_files where repo_root=?`, repoRoot)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if _, ok := current[path]; !ok {
+			stale = append(stale, path)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, path := range stale {
+		if _, err := tx.ExecContext(ctx, `delete from indexed_files where repo_root=? and path=?`, repoRoot, path); err != nil {
 			return err
 		}
 	}

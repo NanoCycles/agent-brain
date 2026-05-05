@@ -19,6 +19,7 @@ type PrepareOptions struct {
 	Fast     bool
 	NoIndex  bool
 	Budget   string
+	Progress ProgressFunc
 }
 
 type PrepareResult struct {
@@ -29,6 +30,8 @@ type PrepareResult struct {
 	RuntimeUp    bool
 	Handoff      string
 }
+
+type ProgressFunc func(progress int, stage string)
 
 type PrepareService struct {
 	initService *InitService
@@ -43,24 +46,32 @@ func NewPrepareService(initService *InitService, runtime ports.RuntimeManager, i
 }
 
 func (s *PrepareService) Prepare(ctx context.Context, p paths.ProjectPaths, cfg Config, opts PrepareOptions) (PrepareResult, error) {
+	report := opts.Progress
+	if report == nil {
+		report = func(int, string) {}
+	}
 	if opts.TaskPath == "" && opts.Topic == "" {
 		return PrepareResult{}, fmt.Errorf("provide --task or --topic")
 	}
 	if opts.TaskPath != "" && opts.Topic != "" {
 		return PrepareResult{}, fmt.Errorf("use only one of --task or --topic")
 	}
+	report(5, "initializing project workspace")
 	if err := s.initService.Init(p.Root); err != nil {
 		return PrepareResult{}, err
 	}
 	cfg, _ = LoadConfig(p.ConfigPath)
 	spec := RuntimeSpecFromConfig(cfg, p.ComposePath)
 	result := PrepareResult{}
+	report(15, "checking local Neo4j runtime")
 	if !s.runtime.Neo4jRunning(ctx, spec) {
+		report(20, "starting local Neo4j runtime")
 		if err := s.runtime.Up(ctx, spec); err != nil {
 			return PrepareResult{}, err
 		}
 		result.RuntimeUp = true
 	}
+	report(30, "opening SQLite metadata")
 	if err := s.meta.Init(ctx); err != nil {
 		return PrepareResult{}, err
 	}
@@ -70,12 +81,17 @@ func (s *PrepareService) Prepare(ctx context.Context, p paths.ProjectPaths, cfg 
 		shouldIndex = run == nil || time.Since(run.CompletedAt) > 10*time.Minute
 	}
 	if shouldIndex {
-		if _, err := NewIndexService(s.indexer, s.meta, s.graph).Index(ctx, p.Root); err != nil {
+		report(45, "indexing repository incrementally")
+		if _, err := NewIndexService(s.indexer, s.meta, s.graph).IndexWithOptions(ctx, p.Root, IndexOptions{Incremental: true}); err != nil {
 			return PrepareResult{}, err
 		}
 		result.Indexed = true
+		report(70, "repository index ready")
+	} else {
+		report(55, "using existing repository index")
 	}
 	contextService := NewContextServiceWithBudget(s.meta, s.graph, opts.Budget)
+	report(80, "generating context pack")
 	if opts.TaskPath != "" {
 		pack, md, js, err := contextService.Generate(ctx, p.Root, opts.TaskPath, p.RulesDir, p.AIContextDir)
 		if err != nil {
@@ -94,6 +110,7 @@ func (s *PrepareService) Prepare(ctx context.Context, p paths.ProjectPaths, cfg 
 		result.Pack, result.MarkdownPath, result.JSONPath = pack, md, js
 	}
 	result.Handoff = HandoffPrompt(result.MarkdownPath)
+	report(95, "context pack generated")
 	return result, nil
 }
 

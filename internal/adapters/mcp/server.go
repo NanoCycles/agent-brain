@@ -29,7 +29,7 @@ type Server struct {
 	operations *operationStore
 }
 
-const serverVersion = "0.1.15"
+const serverVersion = "0.1.16"
 
 func NewServer(in io.Reader, out io.Writer) *Server {
 	return &Server{in: in, out: out, operations: newOperationStore()}
@@ -60,18 +60,25 @@ type toolCallParams struct {
 }
 
 type operation struct {
-	ID          string    `json:"operation_id"`
-	Name        string    `json:"name"`
-	RepoRoot    string    `json:"repo_root,omitempty"`
-	Status      string    `json:"status"`
-	Progress    int       `json:"progress"`
-	Stage       string    `json:"stage"`
-	Result      string    `json:"result,omitempty"`
-	Error       string    `json:"error,omitempty"`
-	StartedAt   time.Time `json:"started_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	CompletedAt time.Time `json:"completed_at,omitempty"`
+	ID          string           `json:"operation_id"`
+	Name        string           `json:"name"`
+	RepoRoot    string           `json:"repo_root,omitempty"`
+	Status      string           `json:"status"`
+	Progress    int              `json:"progress"`
+	Stage       string           `json:"stage"`
+	Events      []operationEvent `json:"events,omitempty"`
+	Result      string           `json:"result,omitempty"`
+	Error       string           `json:"error,omitempty"`
+	StartedAt   time.Time        `json:"started_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	CompletedAt time.Time        `json:"completed_at,omitempty"`
 	cancel      context.CancelFunc
+}
+
+type operationEvent struct {
+	At       time.Time `json:"at"`
+	Progress int       `json:"progress"`
+	Stage    string    `json:"stage"`
 }
 
 type operationStore struct {
@@ -255,10 +262,20 @@ func toolDefinitions() []map[string]any {
 			"comments_path": map[string]any{"type": "string", "description": "Markdown/text file with review comments"},
 		}),
 		tool("github_pr_comments", "Import GitHub PR review comments into .ai/reviews and return an agent repair plan. Requires GITHUB_TOKEN/GH_TOKEN or authenticated gh CLI.", map[string]any{
-			"pr":     map[string]any{"type": "string", "description": "PR number or GitHub pull request URL"},
-			"repo":   map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
-			"token":  map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
-			"review": map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+			"pr":           map[string]any{"type": "string", "description": "PR number or GitHub pull request URL"},
+			"repo":         map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
+			"token":        map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
+			"review":       map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+			"post_summary": map[string]any{"type": "boolean", "description": "Post an agent-brain import summary comment back to the PR"},
+			"repo_root":    repoRoot,
+		}),
+		tool("github_pr_comments_async", "Import GitHub PR review comments in the background. Use operation_status to poll progress/result.", map[string]any{
+			"pr":           map[string]any{"type": "string", "description": "PR number or GitHub pull request URL"},
+			"repo":         map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
+			"token":        map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
+			"review":       map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+			"post_summary": map[string]any{"type": "boolean", "description": "Post an agent-brain import summary comment back to the PR"},
+			"repo_root":    repoRoot,
 		}),
 		tool("jira_import_from_mcp", "Create .ai/tasks/<KEY>.md from Jira fields already read by an Atlassian/Jira MCP tool. Use when CLI Jira credentials are unavailable.", map[string]any{
 			"key":                 map[string]any{"type": "string", "description": "Jira issue key, e.g. AK-1184"},
@@ -324,25 +341,29 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "start_task":
 		return startTask(ctx, p, args)
 	case "start_task_async":
-		return s.startAsync(ctx, "start_task", p.Root, args, func(ctx context.Context) (string, error) {
+		return s.startAsync(ctx, "start_task", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			args["progress"] = progress
 			return startTask(ctx, p, args)
 		}), nil
 	case "finish_task":
 		return finishTask(ctx, p, args)
 	case "finish_task_async":
-		return s.startAsync(ctx, "finish_task", p.Root, args, func(ctx context.Context) (string, error) {
+		return s.startAsync(ctx, "finish_task", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			progress(20, "reviewing git diff")
 			return finishTask(ctx, p, args)
 		}), nil
 	case "prepare_context":
 		return prepareContext(ctx, p, args)
 	case "prepare_context_async":
-		return s.startAsync(ctx, "prepare_context", p.Root, args, func(ctx context.Context) (string, error) {
+		return s.startAsync(ctx, "prepare_context", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			args["progress"] = progress
 			return prepareContext(ctx, p, args)
 		}), nil
 	case "agent_start":
 		return agentStart(ctx, p, args)
 	case "agent_start_async":
-		return s.startAsync(ctx, "agent_start", p.Root, args, func(ctx context.Context) (string, error) {
+		return s.startAsync(ctx, "agent_start", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			args["progress"] = progress
 			return agentStart(ctx, p, args)
 		}), nil
 	case "get_context_pack":
@@ -358,11 +379,13 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		}
 		return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
 	case "review_diff_async":
-		return s.startAsync(ctx, "review_diff", p.Root, args, func(ctx context.Context) (string, error) {
+		return s.startAsync(ctx, "review_diff", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			progress(25, "reading git diff")
 			report, summary, err := app.NewReviewService().ReviewDiff(ctx, p.Root, p.RulesDir)
 			if err != nil {
 				return "", err
 			}
+			progress(85, "rendering review findings")
 			return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
 		}), nil
 	case "operation_status":
@@ -386,6 +409,16 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		return summary, err
 	case "github_pr_comments":
 		return githubPRComments(ctx, p, args)
+	case "github_pr_comments_async":
+		return s.startAsync(ctx, "github_pr_comments", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			progress(20, "fetching GitHub PR review comments")
+			text, err := githubPRComments(ctx, p, args)
+			if err != nil {
+				return "", err
+			}
+			progress(85, "review comments imported")
+			return text, nil
+		}), nil
 	case "jira_import_from_mcp":
 		return jiraImportFromMCP(p, args)
 	case "status":
@@ -469,11 +502,14 @@ func reviewContext(parent context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(base, 2*time.Minute)
 }
 
-func (s *Server) startAsync(parent context.Context, name, repoRoot string, args map[string]any, run func(context.Context) (string, error)) string {
+func (s *Server) startAsync(parent context.Context, name, repoRoot string, args map[string]any, run func(context.Context, app.ProgressFunc) (string, error)) string {
 	op, ctx := s.operations.start(parent, name, repoRoot)
 	go func() {
 		s.operations.update(op.ID, "running", 10, "started", "", "")
-		result, err := run(ctx)
+		progress := func(progress int, stage string) {
+			s.operations.update(op.ID, "running", progress, stage, "", "")
+		}
+		result, err := run(ctx, progress)
 		if err != nil {
 			s.operations.update(op.ID, "failed", 100, "failed", "", asyncErrorMessage(err, repoRoot))
 			return
@@ -574,6 +610,12 @@ func (s *operationStore) update(id, status string, progress int, stage, result, 
 	op.Result = result
 	op.Error = errText
 	op.UpdatedAt = time.Now().UTC()
+	if stage != "" {
+		op.Events = append(op.Events, operationEvent{At: op.UpdatedAt, Progress: progress, Stage: stage})
+		if len(op.Events) > 40 {
+			op.Events = op.Events[len(op.Events)-40:]
+		}
+	}
 	if status == "completed" || status == "failed" || status == "cancelled" {
 		op.CompletedAt = op.UpdatedAt
 		if op.cancel != nil {
@@ -744,6 +786,7 @@ func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]a
 		Fast:     boolArgDefault(args, "fast", true),
 		NoIndex:  boolArg(args, "no_index"),
 		Budget:   stringArg(args, "budget"),
+		Progress: progressArg(args),
 	})
 	if err != nil {
 		return "", err
@@ -775,6 +818,7 @@ func agentStart(ctx context.Context, p paths.ProjectPaths, args map[string]any) 
 		NoIndex:         boolArg(args, "no_index"),
 		BootstrapMemory: boolArgDefault(args, "bootstrap_memory", true),
 		MemoryArea:      stringArgDefault(args, "memory_area", "all"),
+		Progress:        progressArg(args),
 	})
 	if err != nil {
 		return "", err
@@ -827,17 +871,21 @@ func githubPRComments(ctx context.Context, p paths.ProjectPaths, args map[string
 		return "", fmt.Errorf("pr is required")
 	}
 	result, err := app.ImportGitHubPRComments(ctx, app.GitHubPRCommentsOptions{
-		RepoRoot:  p.Root,
-		PR:        pr,
-		OwnerRepo: stringArg(args, "repo"),
-		OutputDir: filepath.Join(p.Root, ".ai", "reviews"),
-		Token:     stringArg(args, "token"),
+		RepoRoot:    p.Root,
+		PR:          pr,
+		OwnerRepo:   stringArg(args, "repo"),
+		OutputDir:   filepath.Join(p.Root, ".ai", "reviews"),
+		Token:       stringArg(args, "token"),
+		PostSummary: boolArg(args, "post_summary"),
 	})
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "GitHub PR comments imported: %s\nRepository: %s\nPR: #%s\nComments: %d\nSource: %s\n", result.Path, result.OwnerRepo, result.PR, result.CommentCount, result.Source)
+	if result.PostedURL != "" {
+		fmt.Fprintf(&b, "Posted summary: %s\n", result.PostedURL)
+	}
 	if boolArgDefault(args, "review", true) {
 		_, summary, err := app.NewReviewService().ReviewComments(result.Path)
 		if err != nil {
@@ -1093,6 +1141,13 @@ func boolArgDefault(args map[string]any, key string, fallback bool) bool {
 		return v
 	}
 	return fallback
+}
+
+func progressArg(args map[string]any) app.ProgressFunc {
+	if v, ok := args["progress"].(app.ProgressFunc); ok {
+		return v
+	}
+	return nil
 }
 
 func stringSliceArg(args map[string]any, key string) []string {

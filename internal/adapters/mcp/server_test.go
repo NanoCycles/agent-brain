@@ -57,6 +57,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if !strings.Contains(lines[1], "operation_list") || !strings.Contains(lines[1], "clean_context") || !strings.Contains(lines[1], "mcp_health") {
 		t.Fatalf("tools/list response does not include operation maintenance tools: %s", lines[1])
 	}
+	if !strings.Contains(lines[1], "agent_start_async") || !strings.Contains(lines[1], "bootstrap_domain_memory") {
+		t.Fatalf("tools/list response does not include agent workflow tools: %s", lines[1])
+	}
 }
 
 func TestUnknownToolReturnsToolError(t *testing.T) {

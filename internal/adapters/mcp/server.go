@@ -29,7 +29,7 @@ type Server struct {
 	operations *operationStore
 }
 
-const serverVersion = "0.1.14"
+const serverVersion = "0.1.15"
 
 func NewServer(in io.Reader, out io.Writer) *Server {
 	return &Server{in: in, out: out, operations: newOperationStore()}
@@ -204,6 +204,26 @@ func toolDefinitions() []map[string]any {
 			"no_index":  map[string]any{"type": "boolean", "description": "Generate context from existing metadata without indexing"},
 			"repo_root": repoRoot,
 		}),
+		tool("agent_start", "Run the complete agent startup workflow: init/up/index/context and domain-memory proposal when needed.", map[string]any{
+			"task_path":        map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
+			"topic":            map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"budget":           map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
+			"fast":             map[string]any{"type": "boolean"},
+			"no_index":         map[string]any{"type": "boolean"},
+			"bootstrap_memory": map[string]any{"type": "boolean", "description": "Generate a domain-memory proposal"},
+			"memory_area":      map[string]any{"type": "string", "description": "Memory area: all, graphql, auth, billing, events, persistence, application, domain"},
+			"repo_root":        repoRoot,
+		}),
+		tool("agent_start_async", "Run the complete agent startup workflow in the background. Use operation_status to poll progress/result.", map[string]any{
+			"task_path":        map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
+			"topic":            map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
+			"budget":           map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
+			"fast":             map[string]any{"type": "boolean"},
+			"no_index":         map[string]any{"type": "boolean"},
+			"bootstrap_memory": map[string]any{"type": "boolean"},
+			"memory_area":      map[string]any{"type": "string"},
+			"repo_root":        repoRoot,
+		}),
 		tool("finish_task_async", "Run final diff review and memory proposal generation in the background. Use operation_status to poll progress/result.", map[string]any{
 			"task_path": map[string]any{"type": "string"},
 			"repo_root": repoRoot,
@@ -262,6 +282,10 @@ func toolDefinitions() []map[string]any {
 			"task_path": map[string]any{"type": "string"},
 			"area":      map[string]any{"type": "string", "description": "Optional area: graphql, auth, billing, events, persistence, or all"},
 		}),
+		tool("bootstrap_domain_memory", "Create an initial system/domain memory proposal from indexed code. Does not apply automatically.", map[string]any{
+			"area":      map[string]any{"type": "string", "description": "Optional area: all, graphql, auth, billing, events, persistence, application, domain"},
+			"repo_root": repoRoot,
+		}),
 		tool("apply_domain_memory", "Apply approved system/domain memory to local file, SQLite, and Neo4j. Call only after human approval.", map[string]any{
 			"proposal_path": map[string]any{"type": "string"},
 			"confirmed":     map[string]any{"type": "boolean"},
@@ -314,6 +338,12 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "prepare_context_async":
 		return s.startAsync(ctx, "prepare_context", p.Root, args, func(ctx context.Context) (string, error) {
 			return prepareContext(ctx, p, args)
+		}), nil
+	case "agent_start":
+		return agentStart(ctx, p, args)
+	case "agent_start_async":
+		return s.startAsync(ctx, "agent_start", p.Root, args, func(ctx context.Context) (string, error) {
+			return agentStart(ctx, p, args)
 		}), nil
 	case "get_context_pack":
 		return getContextPack(p, args)
@@ -382,6 +412,8 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 		return "Memory proposal generated: " + path, nil
 	case "propose_domain_memory":
 		return proposeDomainMemory(ctx, p, stringArg(args, "task_path"), stringArg(args, "area"))
+	case "bootstrap_domain_memory":
+		return proposeDomainMemory(ctx, p, "", stringArg(args, "area"))
 	case "apply_domain_memory":
 		return applyDomainMemory(ctx, p, stringArg(args, "proposal_path"), boolArg(args, "confirmed"))
 	case "get_system_memory":
@@ -720,6 +752,36 @@ func prepareContext(ctx context.Context, p paths.ProjectPaths, args map[string]a
 		result.MarkdownPath, result.JSONPath, result.Pack.ContextQuality.Level, result.Pack.ContextQuality.Score, result.Indexed, result.RuntimeUp, len(result.Pack.LikelyRelevantFiles), result.Handoff), nil
 }
 
+func agentStart(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	cfg, _ := app.LoadConfig(p.ConfigPath)
+	if cfg.ProjectID == "" {
+		cfg = app.DefaultConfig(p.Root)
+	}
+	store, err := sqlstore.New(p.SQLitePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	graph := graphOrNil(p.ConfigPath)
+	if graph != nil {
+		defer graph.Close(ctx)
+	}
+	prepare := app.NewPrepareService(app.NewInitService(filesystem.LocalFS{}), dockerruntime.Runtime{}, golang.Indexer{}, store, graph)
+	result, err := app.NewAgentWorkflowService(prepare, store, graph).Start(ctx, p, cfg, app.AgentWorkflowOptions{
+		TaskPath:        stringArg(args, "task_path"),
+		Topic:           stringArg(args, "topic"),
+		Budget:          stringArg(args, "budget"),
+		Fast:            boolArgDefault(args, "fast", true),
+		NoIndex:         boolArg(args, "no_index"),
+		BootstrapMemory: boolArgDefault(args, "bootstrap_memory", true),
+		MemoryArea:      stringArgDefault(args, "memory_area", "all"),
+	})
+	if err != nil {
+		return "", err
+	}
+	return app.RenderAgentWorkflowResult(result), nil
+}
+
 func proposeDomainMemory(ctx context.Context, p paths.ProjectPaths, taskPath, area string) (string, error) {
 	store, err := sqlstore.New(p.SQLitePath)
 	if err != nil {
@@ -1010,6 +1072,13 @@ func stringArg(args map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+func stringArgDefault(args map[string]any, key, fallback string) string {
+	if v := strings.TrimSpace(stringArg(args, key)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func boolArg(args map[string]any, key string) bool {

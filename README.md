@@ -155,15 +155,17 @@ sequenceDiagram
 Agents should also read `AGENTS.md` in this repository. It is the compact operating contract for coding agents using `agent-brain`.
 
 1. Create a task in `.ai/tasks/TICKET.md`.
-2. Run `agent-brain prepare --task .ai/tasks/TICKET.md`.
-3. Ask the agent to read `.ai/context/<TASK_ID>.agent.md` before editing, or paste the prompt printed by `agent-brain prepare`.
-5. After implementation, run `agent-brain review-diff`.
-6. Generate memory with `agent-brain memory-proposal --task .ai/tasks/TICKET.md`.
+2. Run `agent-brain agent-start --task .ai/tasks/TICKET.md`.
+3. Ask the agent to read `.ai/context/<TASK_ID>.agent.md` before editing, or paste the prompt printed by `agent-brain agent-start`.
+4. After implementation, run `agent-brain review-diff`.
+5. Generate memory with `agent-brain memory-proposal --task .ai/tasks/TICKET.md`.
+
+`agent-start` initializes the repo if needed, starts Neo4j, indexes when needed, generates the compact context pack, and creates a domain-memory proposal when memory is empty or `--bootstrap-memory` is enabled. It does not apply memory automatically.
 
 For MCP-connected agents, prefer this prompt:
 
 ```text
-Use agent-brain first. Call start_task with task_path or topic before reading files.
+Use agent-brain first. Call agent_start_async with task_path or topic before reading files.
 Open only top-ranked files first. Run focused tests. Call review_diff before final response.
 Call finish_task after validation and ask before applying memory.
 Do not commit or push unless explicitly asked.
@@ -230,14 +232,14 @@ On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
 
 Recommended agent flow:
 
-1. Prefer `start_task_async` or `prepare_context_async` for large repos, then poll `operation_status`.
-2. Use `start_task` only for small/fast repos or when the agent host has generous MCP timeouts.
+1. Prefer `agent_start_async` for normal coding tasks, then poll `operation_status`.
+2. Use `start_task_async` or `prepare_context_async` only when you need a narrower operation.
 3. Read the returned handoff, generated context pack, and approved system memory.
 4. Use `impact` for focused follow-up questions.
 5. Use `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
 6. Call `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
-The MCP server exposes these tools: `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+The MCP server exposes these tools: `agent_start`, `agent_start_async`, `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `bootstrap_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
 
 Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
 
@@ -309,7 +311,7 @@ agent-brain jira import AK-123 --offline
 Generate context and inspect impact:
 
 ```sh
-agent-brain prepare --task .ai/tasks/AK-123.md --budget cavernicola
+agent-brain agent-start --task .ai/tasks/AK-123.md --budget cavernicola
 agent-brain impact --topic "main technical topic" --budget cavernicola
 agent-brain memory-domain list --area all --topic "main technical topic"
 ```
@@ -320,6 +322,12 @@ Before finishing a code change:
 agent-brain review-diff
 agent-brain memory-proposal --task .ai/tasks/AK-123.md
 agent-brain memory-domain propose --task .ai/tasks/AK-123.md --area all
+```
+
+For new projects, bootstrap the system/business map after the first index:
+
+```sh
+agent-brain memory-domain bootstrap --area all
 ```
 
 Only apply memory after human approval:
@@ -364,6 +372,7 @@ Do not use `neo4j+s://localhost:7474` for local agent-brain containers. `7474` i
 - `agent-brain prepare --budget cavernicola|compact|standard|deep`: controls how much context is returned; default is `cavernicola`.
 - `agent-brain prepare --fast`: skips reindexing when the last index is recent.
 - `agent-brain prepare --no-index`: generates context from current metadata without indexing.
+- `agent-brain agent-start --task .ai/tasks/TICKET.md`: runs the full agent startup workflow and proposes domain memory when needed.
 - `agent-brain handoff --task .ai/tasks/TICKET.md`: prints a prompt for Codex/Cursor/Claude to use the generated context pack.
 - `agent-brain mcp serve`: starts the stdio MCP server for AI coding agents.
 - `agent-brain mcp install-codex`: installs the local MCP server into Codex config with a backup.
@@ -381,6 +390,7 @@ Do not use `neo4j+s://localhost:7474` for local agent-brain containers. `7474` i
 - `agent-brain memory-proposal --task .ai/tasks/TICKET.md`: writes a structured memory proposal.
 - `agent-brain memory-apply <proposal.yml>`: validates and applies memory after confirmation.
 - `agent-brain memory-domain propose --task .ai/tasks/TICKET.md --area graphql`: proposes system/business memory by area.
+- `agent-brain memory-domain bootstrap --area all`: creates an initial domain memory proposal from indexed code.
 - `agent-brain memory-domain apply .ai/memory-proposals/TICKET.domain.yml --yes`: applies approved domain memory to file, SQLite, and Neo4j.
 - `agent-brain memory-domain list --area graphql --topic "nested count"`: prints compact approved system memory.
 

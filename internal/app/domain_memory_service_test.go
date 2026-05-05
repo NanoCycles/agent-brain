@@ -46,3 +46,20 @@ func TestRenderDomainMemoryKeepsLegacyAreaBlank(t *testing.T) {
 		t.Fatalf("expected legacy area-less memory to match filtered area, got %s", got)
 	}
 }
+
+func TestInferDomainMemoryBootstrapFindsLayersAndREST(t *testing.T) {
+	files := []domain.IndexedFile{
+		{Path: "internal/domain/project.go", Layer: "domain"},
+		{Path: "internal/application/usecase/create_project.go", Layer: "application"},
+		{Path: "internal/adapters/http/routes.go", Layer: "adapter_rest"},
+		{Path: "internal/adapters/postgres/project_repository.go", Layer: "adapter_persistence"},
+	}
+	caps := DetectRepoCapabilities(t.TempDir(), files)
+	memory := inferDomainMemory(domain.Task{ID: "domain-initial", Content: "initial scan"}, caps, files, "all")
+	joined := RenderDomainMemory(memory, "", "all", 20)
+	for _, want := range []string{"Domain model", "Application use cases", "REST/HTTP adapter", "Persistence adapter", "Domain stays framework-free"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in bootstrap memory, got %s", want, joined)
+		}
+	}
+}

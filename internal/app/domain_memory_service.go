@@ -150,6 +150,39 @@ func inferDomainMemory(task domain.Task, caps domain.RepoCapabilities, files []d
 			Files: evidence, Contracts: []string{"DB"}, Confidence: 0.65,
 		})
 	}
+	if shouldInferArea(requestedArea, "application") && len(byLayer["application"]) > 0 {
+		evidence := firstSorted(byLayer["application"], 6)
+		m.SystemComponents = append(m.SystemComponents, domain.SystemComponent{
+			Name: "Application use cases", Area: "application", Kind: "application_layer", Responsibility: "Coordinates business workflows between domain behavior, ports, and adapters.",
+			Files: evidence, Confidence: 0.62,
+		})
+		m.Invariants = append(m.Invariants, domain.BusinessInvariant{
+			Name: "Use cases stay transport-free", Area: "application", Statement: "Application/use case code should not depend on REST, GraphQL, gRPC, event, or database adapter details.",
+			Evidence: evidence, Confidence: 0.72,
+		})
+	}
+	if shouldInferArea(requestedArea, "domain") && len(byLayer["domain"]) > 0 {
+		evidence := firstSorted(byLayer["domain"], 6)
+		m.SystemComponents = append(m.SystemComponents, domain.SystemComponent{
+			Name: "Domain model", Area: "domain", Kind: "domain_layer", Responsibility: "Owns domain concepts, invariants, and framework-independent business rules.",
+			Files: evidence, Confidence: 0.64,
+		})
+		m.Invariants = append(m.Invariants, domain.BusinessInvariant{
+			Name: "Domain stays framework-free", Area: "domain", Statement: "Domain code must remain independent from transport, persistence, and framework packages.",
+			Evidence: evidence, Confidence: 0.78,
+		})
+	}
+	if shouldInferArea(requestedArea, "rest") && caps.HasREST {
+		evidence := selectEvidence(files, "http", "rest", "handler", "router", "server")
+		m.SystemComponents = append(m.SystemComponents, domain.SystemComponent{
+			Name: "REST/HTTP adapter", Area: "rest", Kind: "adapter", Responsibility: "Exposes public HTTP routes, request validation, middleware boundaries, and response shaping.",
+			Files: evidence, Contracts: []string{"REST"}, Confidence: 0.68,
+		})
+		m.BusinessRules = append(m.BusinessRules, domain.BusinessRule{
+			Name: "Public HTTP contracts require compatibility", Area: "rest", Statement: "Route, request, response, and status-code behavior should remain backward-compatible unless explicitly approved.",
+			Evidence: evidence, Confidence: 0.7,
+		})
+	}
 	if shouldInferArea(requestedArea, "graphql") && strings.Contains(taskText, "count") {
 		evidence := selectEvidence(files, "count", "graphql", "relationship", "nested")
 		m.BusinessRules = append(m.BusinessRules, domain.BusinessRule{
@@ -196,6 +229,17 @@ func inferDomainMemory(task domain.Task, caps domain.RepoCapabilities, files []d
 			Evidence: evidence, Confidence: 0.78,
 		})
 	}
+	if shouldInferArea(requestedArea, "cache") && hasEvidence(files, "cache", "redis", "lru") {
+		evidence := selectEvidence(files, "cache", "redis", "lru")
+		m.SystemComponents = append(m.SystemComponents, domain.SystemComponent{
+			Name: "Cache layer", Area: "cache", Kind: "infrastructure", Responsibility: "Caches derived or remote state and must preserve scope, invalidation, and consistency semantics.",
+			Files: evidence, Confidence: 0.62,
+		})
+		m.BusinessRules = append(m.BusinessRules, domain.BusinessRule{
+			Name: "Cache keys preserve isolation", Area: "cache", Statement: "Cache keys for tenant/project data must include the correct isolation scope.",
+			Evidence: evidence, Confidence: 0.68,
+		})
+	}
 	for layer, paths := range byLayer {
 		sort.Strings(paths)
 		if len(paths) > 3 {
@@ -209,6 +253,15 @@ func inferDomainMemory(task domain.Task, caps domain.RepoCapabilities, files []d
 		}
 	}
 	return m
+}
+
+func firstSorted(values []string, limit int) []string {
+	out := append([]string{}, values...)
+	sort.Strings(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func selectEvidence(files []domain.IndexedFile, terms ...string) []string {

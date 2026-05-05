@@ -24,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), agentStartCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -313,6 +313,57 @@ func prepareCmd(ctx context.Context) *cobra.Command {
 	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
 	c.Flags().BoolVar(&fast, "fast", false, "skip reindex if the last index is recent")
 	c.Flags().BoolVar(&noIndex, "no-index", false, "do not index before generating context")
+	return c
+}
+
+func agentStartCmd(ctx context.Context) *cobra.Command {
+	var task, topic, budget, memoryArea string
+	var fast, noIndex, bootstrapMemory bool
+	c := &cobra.Command{
+		Use:   "agent-start",
+		Short: "Run the complete agent startup workflow for a task or topic",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, err := loadOrDefaultConfig(p)
+			if err != nil {
+				return err
+			}
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			prepare := app.NewPrepareService(app.NewInitService(filesystem.LocalFS{}), dockerruntime.Runtime{}, golang.Indexer{}, store, graph)
+			result, err := app.NewAgentWorkflowService(prepare, store, graph).Start(ctx, p, cfg, app.AgentWorkflowOptions{
+				TaskPath:        task,
+				Topic:           topic,
+				Budget:          budget,
+				Fast:            fast,
+				NoIndex:         noIndex,
+				BootstrapMemory: bootstrapMemory,
+				MemoryArea:      memoryArea,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), app.RenderAgentWorkflowResult(result))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&topic, "topic", "", "topic text")
+	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
+	c.Flags().BoolVar(&fast, "fast", true, "skip reindex if the last index is recent")
+	c.Flags().BoolVar(&noIndex, "no-index", false, "do not index before generating context")
+	c.Flags().BoolVar(&bootstrapMemory, "bootstrap-memory", true, "generate a domain memory proposal when memory is empty or bootstrap is requested")
+	c.Flags().StringVar(&memoryArea, "memory-area", "all", "memory area: all, graphql, auth, billing, events, persistence, application, domain")
 	return c
 }
 
@@ -837,6 +888,30 @@ func domainMemoryCmd(ctx context.Context) *cobra.Command {
 	}
 	propose.Flags().StringVar(&task, "task", "", "task markdown path")
 	propose.Flags().StringVar(&area, "area", "all", "memory area: all, graphql, auth, billing, events, persistence")
+	bootstrap := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Create an initial business/domain memory proposal from indexed code",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			_ = store.Init(ctx)
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			path, memory, err := app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, "", p.AIMemoryProposals, area)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Initial domain memory proposal: %s\nConcepts: %d\nComponents: %d\nRules: %d\nInvariants: %d\nHuman approval required before memory-domain apply.\n", path, len(memory.DomainConcepts), len(memory.SystemComponents), len(memory.BusinessRules), len(memory.Invariants))
+			return nil
+		},
+	}
+	bootstrap.Flags().StringVar(&area, "area", "all", "memory area: all, graphql, auth, billing, events, persistence, application, domain")
 	var yes bool
 	apply := &cobra.Command{
 		Use:   "apply <proposal.yml>",
@@ -891,7 +966,7 @@ func domainMemoryCmd(ctx context.Context) *cobra.Command {
 	}
 	list.Flags().StringVar(&topic, "topic", "", "filter memory by topic")
 	list.Flags().StringVar(&listArea, "area", "all", "filter memory by area")
-	root.AddCommand(propose, apply, list)
+	root.AddCommand(propose, bootstrap, apply, list)
 	return root
 }
 

@@ -70,6 +70,7 @@ func (s *ContextService) generateForTask(ctx context.Context, repoRoot string, t
 		pack.LikelyRelevantFiles = mergeGraphImpactCandidates(pack.LikelyRelevantFiles, graphNodes)
 	}
 	ApplyBudget(&pack, s.budget)
+	UpdateContextEfficiency(&pack, len(indexedFiles))
 	if !writeFiles {
 		return pack, "", "", nil
 	}
@@ -133,6 +134,8 @@ func RenderMarkdown(p domain.ContextPack) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent Context Pack\n\n")
 	fmt.Fprintf(&b, "## Context Quality\nLevel: %s\nScore: %.2f\n", p.ContextQuality.Level, p.ContextQuality.Score)
+	fmt.Fprintf(&b, "Context efficiency: returned %d/%d indexed files; avoided %d files; estimated tokens saved: %d\n",
+		p.ContextEfficiency.ReturnedFiles, p.ContextEfficiency.IndexedFiles, p.ContextEfficiency.FilesAvoided, p.ContextEfficiency.EstimatedTokensSaved)
 	writeList(&b, "Warnings", p.ContextQuality.Warnings)
 	fmt.Fprintf(&b, "Recommended next action: %s\n\n", p.ContextQuality.RecommendedNextAction)
 	fmt.Fprintf(&b, "## Task Summary\n%s\n\n", p.TaskSummary)
@@ -159,6 +162,10 @@ func RenderMarkdownCavernicola(p domain.ContextPack) string {
 	fmt.Fprintf(&b, "# Agent Context Pack\n\n")
 	b.WriteString("## Context Quality\n")
 	fmt.Fprintf(&b, "Quality: %s %.2f\n", p.ContextQuality.Level, p.ContextQuality.Score)
+	if p.ContextEfficiency.IndexedFiles > 0 {
+		fmt.Fprintf(&b, "Efficiency: returned %d/%d files; avoided %d; est tokens saved %d\n",
+			p.ContextEfficiency.ReturnedFiles, p.ContextEfficiency.IndexedFiles, p.ContextEfficiency.FilesAvoided, p.ContextEfficiency.EstimatedTokensSaved)
+	}
 	if len(p.ContextQuality.Warnings) > 0 {
 		fmt.Fprintf(&b, "Warnings: %s\n", strings.Join(p.ContextQuality.Warnings, "; "))
 	}

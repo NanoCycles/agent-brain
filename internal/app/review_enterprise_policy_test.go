@@ -174,8 +174,23 @@ func TestSensitiveLoggingRiskRequiresSensitiveLogLine(t *testing.T) {
 	if containsSensitiveLoggingRisk(`return fmt.Errorf("token is required")`, `return fmt.Errorf( )`) {
 		t.Fatal("fmt.Errorf should not be treated as sensitive logging")
 	}
+	if containsSensitiveLoggingRisk(`fmt.Fprintf(&b, "estimated tokens saved %d", p.ContextEfficiency.EstimatedTokensSaved)`, `fmt.fprintf(&b, , p.contextefficiency.estimatedtokenssaved)`) {
+		t.Fatal("token metrics should not be treated as sensitive logging")
+	}
 	if !containsSensitiveLoggingRisk(`log.Info("token", token)`, `log.info( , token)`) {
 		t.Fatal("expected sensitive logging risk")
+	}
+}
+
+func TestEventIdempotencyIgnoresMarkdownDocs(t *testing.T) {
+	root := t.TempDir()
+	path := "README.md"
+	if err := os.WriteFile(filepath.Join(root, path), []byte("Events are supported."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := enterpriseDiffFindings(root, path, "Events are supported.")
+	if hasFindingTitle(findings, "Event idempotency not evident") {
+		t.Fatalf("expected markdown event docs to be ignored, got %#v", findings)
 	}
 }
 

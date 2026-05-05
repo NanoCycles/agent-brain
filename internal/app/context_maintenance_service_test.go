@@ -53,3 +53,23 @@ func TestCleanGeneratedContextRemovesOnlyAgentPacks(t *testing.T) {
 		t.Fatalf("expected non-agent context file to remain: %v", err)
 	}
 }
+
+func TestCountGeneratedContext(t *testing.T) {
+	root := t.TempDir()
+	p, err := paths.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.AIContextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"A.agent.md", "A.agent.json", "B.agent.md"} {
+		if err := os.WriteFile(filepath.Join(p.AIContextDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats := CountGeneratedContext(p)
+	if stats.GeneratedPacks != 2 || stats.MarkdownFiles != 2 || stats.JSONFiles != 1 {
+		t.Fatalf("unexpected stats: %#v", stats)
+	}
+}

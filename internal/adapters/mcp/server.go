@@ -254,6 +254,7 @@ func toolDefinitions() []map[string]any {
 		}),
 		tool("status", "Return project runtime, graph, SQLite, and capability status.", map[string]any{"repo_root": repoRoot}),
 		tool("doctor", "Diagnose local prerequisites and project wiring for agent-brain.", map[string]any{"repo_root": repoRoot}),
+		tool("mcp_health", "Return MCP-focused health diagnostics including cwd, repo root binding, runtime, and recommended recovery actions.", map[string]any{"repo_root": repoRoot}),
 		tool("memory_proposal", "Generate a structured memory proposal after a task is implemented. Does not apply memory automatically.", map[string]any{
 			"task_path": map[string]any{"type": "string"},
 		}),
@@ -360,7 +361,9 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "status":
 		return status(ctx, p)
 	case "doctor":
-		return status(ctx, p)
+		return doctor(ctx, p)
+	case "mcp_health":
+		return mcpHealth(ctx, p)
 	case "memory_proposal":
 		taskPath := stringArg(args, "task_path")
 		if taskPath == "" {
@@ -901,6 +904,80 @@ func status(ctx context.Context, p paths.ProjectPaths) (string, error) {
 		cfg.ProjectID, yesNo(report.Neo4jRunning), p.SQLitePath, report.GraphStats.Nodes, report.GraphStats.Relationships, caps.HasGraphQL, caps.HasREST, caps.HasGRPC, caps.HasEvents, caps.HasPersistence, caps.HasTests), nil
 }
 
+func doctor(ctx context.Context, p paths.ProjectPaths) (string, error) {
+	cfg, err := app.LoadConfig(p.ConfigPath)
+	if err != nil {
+		cfg = app.DefaultConfig(p.Root)
+	}
+	graph := graphOrNil(p.ConfigPath)
+	if graph != nil {
+		defer graph.Close(ctx)
+	}
+	spec := app.RuntimeSpecFromConfig(cfg, p.ComposePath)
+	report := app.NewRuntimeService(dockerruntime.Runtime{}, graph).Status(ctx, spec)
+	store, _ := sqlstore.New(p.SQLitePath)
+	var fileCount int
+	var lastIndex string
+	var caps domain.RepoCapabilities
+	if store != nil {
+		defer store.Close()
+		_ = store.Init(ctx)
+		files, _ := store.IndexedFiles(ctx, p.Root)
+		fileCount = len(files)
+		caps = app.DetectRepoCapabilities(p.Root, files)
+		if run, _ := store.LastIndexRun(ctx, p.Root); run != nil {
+			lastIndex = run.CompletedAt.Format(time.RFC3339)
+		}
+	}
+	contextStats := app.CountGeneratedContext(p)
+	var b strings.Builder
+	fmt.Fprintf(&b, "agent-brain doctor\n")
+	fmt.Fprintf(&b, "Repo root: %s\nProject ID: %s\nRuntime namespace: %s\n", p.Root, cfg.ProjectID, cfg.RuntimeNamespace)
+	fmt.Fprintf(&b, "Config: %s\nDocker: %s\nNeo4j: %s (%s)\nSQLite: %s\n", yesNo(fileExists(p.ConfigPath)), yesNo(report.DockerAvailable), yesNo(report.Neo4jRunning), cfg.Neo4jURI, p.SQLitePath)
+	fmt.Fprintf(&b, "Indexed files: %d\nLast index: %s\nGraph: %d nodes / %d relationships\nContext packs: %d\n", fileCount, valueOr(lastIndex, "none"), report.GraphStats.Nodes, report.GraphStats.Relationships, contextStats.GeneratedPacks)
+	fmt.Fprintf(&b, "Capabilities: GraphQL=%s REST=%s gRPC=%s Events=%s Persistence=%s Tests=%s MainLanguage=%s\n", yesNo(caps.HasGraphQL), yesNo(caps.HasREST), yesNo(caps.HasGRPC), yesNo(caps.HasEvents), yesNo(caps.HasPersistence), yesNo(caps.HasTests), caps.MainLanguage)
+	for _, action := range doctorActions(report, fileCount, caps, contextStats) {
+		fmt.Fprintf(&b, "Next: %s\n", action)
+	}
+	return b.String(), nil
+}
+
+func mcpHealth(ctx context.Context, p paths.ProjectPaths) (string, error) {
+	cwd, _ := os.Getwd()
+	envRoot := os.Getenv("AGENT_BRAIN_REPO_ROOT")
+	diag, err := doctor(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("agent-brain MCP health\nServer version: %s\nProcess cwd: %s\nAGENT_BRAIN_REPO_ROOT: %s\nResolved repo root: %s\n\n%s", serverVersion, cwd, valueOr(envRoot, "not set"), p.Root, diag), nil
+}
+
+func doctorActions(report app.StatusReport, fileCount int, caps domain.RepoCapabilities, contextStats app.ContextOutputStats) []string {
+	var actions []string
+	if !report.DockerAvailable {
+		actions = append(actions, "Start Docker Desktop, then run agent-brain up.")
+	}
+	if report.DockerAvailable && !report.Neo4jRunning {
+		actions = append(actions, "Run agent-brain up.")
+	}
+	if fileCount == 0 {
+		actions = append(actions, "Run agent-brain index --repo . or prepare_context_async.")
+	}
+	if fileCount > 0 && report.Neo4jRunning && report.GraphStats.Nodes == 0 {
+		actions = append(actions, "Re-run agent-brain index --repo . to sync Neo4j.")
+	}
+	if fileCount > 0 && !caps.HasTests {
+		actions = append(actions, "Add or identify tests; indexed repo has no detected tests.")
+	}
+	if contextStats.GeneratedPacks == 0 && fileCount > 0 {
+		actions = append(actions, "Run prepare_context_async for the current task.")
+	}
+	if len(actions) == 0 {
+		actions = append(actions, "Environment looks ready. Use start_task_async or prepare_context_async.")
+	}
+	return actions
+}
+
 func contextPathFromArgs(p paths.ProjectPaths, args map[string]any) string {
 	if explicit := stringArg(args, "context_path"); explicit != "" {
 		return explicit
@@ -980,4 +1057,16 @@ func yesNo(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func valueOr(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

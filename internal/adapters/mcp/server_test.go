@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/NanoCycles/agent-brain/internal/app"
+	"github.com/NanoCycles/agent-brain/internal/domain"
 )
 
 func TestServerInitializeAndListTools(t *testing.T) {
@@ -51,7 +54,7 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if !strings.Contains(lines[1], "operation_status") {
 		t.Fatalf("tools/list response does not include operation_status: %s", lines[1])
 	}
-	if !strings.Contains(lines[1], "operation_list") || !strings.Contains(lines[1], "clean_context") {
+	if !strings.Contains(lines[1], "operation_list") || !strings.Contains(lines[1], "clean_context") || !strings.Contains(lines[1], "mcp_health") {
 		t.Fatalf("tools/list response does not include operation maintenance tools: %s", lines[1])
 	}
 }
@@ -139,6 +142,13 @@ func TestOperationListFiltersByRepoRoot(t *testing.T) {
 	}
 	if !strings.Contains(list, "repo-one") || strings.Contains(list, "repo-two") {
 		t.Fatalf("unexpected operation list: %s", list)
+	}
+}
+
+func TestDoctorActionsRecommendAsyncWhenReady(t *testing.T) {
+	actions := doctorActions(app.StatusReport{DockerAvailable: true, Neo4jRunning: true, GraphStats: domain.GraphStats{Nodes: 3}}, 2, domain.RepoCapabilities{HasTests: true}, app.ContextOutputStats{GeneratedPacks: 1})
+	if len(actions) != 1 || !strings.Contains(actions[0], "prepare_context_async") {
+		t.Fatalf("unexpected actions: %#v", actions)
 	}
 }
 

@@ -221,13 +221,16 @@ func doctorCmd(ctx context.Context) *cobra.Command {
 				defer graph.Close(ctx)
 			}
 			report := app.NewRuntimeService(dockerruntime.Runtime{}, graph).Status(ctx, spec)
+			contextStats := app.CountGeneratedContext(p)
 			fmt.Fprintf(cmd.OutOrStdout(), "agent-brain doctor\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "- repo root: %s\n", p.Root)
+			fmt.Fprintf(cmd.OutOrStdout(), "- runtime namespace: %s\n", cfg.RuntimeNamespace)
 			fmt.Fprintf(cmd.OutOrStdout(), "- config: %s\n", yesNo(filesystem.LocalFS{}.Exists(p.ConfigPath)))
 			fmt.Fprintf(cmd.OutOrStdout(), "- docker: %s\n", yesNo(report.DockerAvailable))
 			fmt.Fprintf(cmd.OutOrStdout(), "- neo4j: %s (%s)\n", yesNo(report.Neo4jRunning), cfg.Neo4jURI)
 			fmt.Fprintf(cmd.OutOrStdout(), "- sqlite: %s\n", p.SQLitePath)
 			fmt.Fprintf(cmd.OutOrStdout(), "- graph: %d nodes / %d relationships\n", report.GraphStats.Nodes, report.GraphStats.Relationships)
+			fmt.Fprintf(cmd.OutOrStdout(), "- context packs: %d\n", contextStats.GeneratedPacks)
 			if report.DockerAvailable && !report.Neo4jRunning {
 				fmt.Fprintln(cmd.OutOrStdout(), "next: run agent-brain up")
 			}

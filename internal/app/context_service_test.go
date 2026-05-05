@@ -45,6 +45,21 @@ func TestApplyBudgetDefaultsToCavernicola(t *testing.T) {
 	}
 }
 
+func TestUpdateContextEfficiency(t *testing.T) {
+	p := domain.ContextPack{
+		LikelyRelevantFiles: []domain.FileCandidate{{Path: "a.go"}, {Path: "b.go"}},
+		AgentBudget:         domain.AgentBudget{OpenTopFilesFirst: 1, ExplorationMode: "minimal"},
+		ContextQuality:      domain.ContextQuality{Level: "high"},
+	}
+	UpdateContextEfficiency(&p, 10)
+	if p.ContextEfficiency.ReturnedFiles != 2 || p.ContextEfficiency.FilesAvoided != 8 {
+		t.Fatalf("unexpected efficiency: %#v", p.ContextEfficiency)
+	}
+	if p.ContextEfficiency.EstimatedTokensSaved != 6400 {
+		t.Fatalf("unexpected token savings: %#v", p.ContextEfficiency)
+	}
+}
+
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }

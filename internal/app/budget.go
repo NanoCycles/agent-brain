@@ -39,6 +39,32 @@ func ApplyBudget(p *domain.ContextPack, mode string) {
 	}
 }
 
+func UpdateContextEfficiency(p *domain.ContextPack, indexedFiles int) {
+	if indexedFiles < 0 {
+		indexedFiles = 0
+	}
+	returned := len(p.LikelyRelevantFiles)
+	avoided := indexedFiles - returned
+	if avoided < 0 {
+		avoided = 0
+	}
+	action := "Open only the top-ranked files first."
+	if p.ContextQuality.Level == "low" {
+		action = "Ask before broad exploration; context quality is low."
+	} else if returned == 0 {
+		action = "Index the target service or add domain-specific rules before exploring broadly."
+	}
+	p.ContextEfficiency = domain.ContextEfficiency{
+		IndexedFiles:           indexedFiles,
+		ReturnedFiles:          returned,
+		FilesAvoided:           avoided,
+		OpenTopFilesFirst:      p.AgentBudget.OpenTopFilesFirst,
+		EstimatedTokensSaved:   avoided * 800,
+		ExplorationMode:        p.AgentBudget.ExplorationMode,
+		RecommendedAgentAction: action,
+	}
+}
+
 func trimPack(p *domain.ContextPack, files, topics, tests, strategy int) {
 	if len(p.LikelyRelevantFiles) > files {
 		p.LikelyRelevantFiles = p.LikelyRelevantFiles[:files]

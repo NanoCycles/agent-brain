@@ -14,6 +14,28 @@ type CleanContextResult struct {
 	Skipped []string
 }
 
+type ContextOutputStats struct {
+	GeneratedPacks int
+	MarkdownFiles  int
+	JSONFiles      int
+}
+
+func CountGeneratedContext(p paths.ProjectPaths) ContextOutputStats {
+	var stats ContextOutputStats
+	for _, dir := range []string{p.AIContextDir, p.ContextDir} {
+		md, _ := filepath.Glob(filepath.Join(dir, "*.agent.md"))
+		js, _ := filepath.Glob(filepath.Join(dir, "*.agent.json"))
+		stats.MarkdownFiles += len(md)
+		stats.JSONFiles += len(js)
+	}
+	if stats.MarkdownFiles > stats.JSONFiles {
+		stats.GeneratedPacks = stats.MarkdownFiles
+	} else {
+		stats.GeneratedPacks = stats.JSONFiles
+	}
+	return stats
+}
+
 func CleanGeneratedContext(p paths.ProjectPaths, confirmed bool) (CleanContextResult, error) {
 	if !confirmed {
 		return CleanContextResult{}, fmt.Errorf("clean-context requires confirmation; pass --confirm or confirmed=true")

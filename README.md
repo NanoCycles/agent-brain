@@ -237,11 +237,13 @@ Recommended agent flow:
 5. Use `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
 6. Call `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
-The MCP server exposes these tools: `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+The MCP server exposes these tools: `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
 
 Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
 
 If an MCP host launches the server outside the project folder, pass `repo_root` in tool calls or rerun the installer from inside the target repository. Installers bind `AGENT_BRAIN_REPO_ROOT` to the current project so each local repo keeps its own SQLite database and Neo4j container/ports.
+
+Use `mcp_health` when an IDE agent appears to use the wrong project, reports Docker as unavailable, or times out. It prints the MCP process cwd, resolved repo root, env binding, runtime state, graph state, context pack count, and next recovery action.
 
 To safely recreate generated context packs without touching source code, memory, SQLite, or Neo4j:
 
@@ -257,6 +259,16 @@ Current indexer support:
 |---|---|
 | Go | packages, files, structs, interfaces, functions, methods, tests, imports, contracts, calls, typed interface/call hints |
 | JavaScript / TypeScript | imports, require, exported functions, classes, TypeScript interfaces, class methods, tests, REST routes, GraphQL resolver-like files, event files |
+
+## Context Efficiency
+
+Every generated context pack includes `context_efficiency`, a compact signal for agents:
+
+- `indexed_files`: files known in SQLite for this repo.
+- `returned_files`: files included in the compact context pack.
+- `files_avoided`: indexed files the agent should not open initially.
+- `estimated_tokens_saved`: rough local estimate using avoided files.
+- `recommended_agent_action`: whether to open top files, re-index, or ask before broad exploration.
 | GraphQL schema | schema files and GraphQL contract nodes |
 | protobuf | service/RPC contract nodes |
 

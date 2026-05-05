@@ -448,7 +448,7 @@ func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
 	if touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "valid", "bind", "decode", "sanitize") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary input validation not evident", Message: "HTTP/GraphQL/RPC/event boundary changes should visibly validate or decode inputs safely.", Path: path})
 	}
-	if touchesEventPathOrText(p, text) && !reviewTextContainsAny(fullText, "idempot", "dedup", "processed", "duplicate") {
+	if isReviewCodeOrConfigPath(p) && touchesEventPathOrText(p, codeText) && !reviewTextContainsAny(fullText, "idempot", "dedup", "processed", "duplicate") {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Event idempotency not evident", Message: "Event consumer/producer changes must show duplicate delivery/idempotency handling.", Path: path})
 	}
 	if touchesAuditPathOrText(p, text) && !strings.Contains(fullText, "transaction") && !strings.Contains(fullText, "tx.") {
@@ -541,7 +541,25 @@ func containsSensitiveLoggingRisk(text, codeText string) bool {
 		if i < len(rawLines) {
 			rawLine = rawLines[i]
 		}
-		if reviewTextContainsAny(rawLine, "password", "token", "secret", "authorization", "cookie") {
+		if containsSensitiveTerm(rawLine) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSensitiveTerm(line string) bool {
+	line = strings.ToLower(line)
+	terms := []string{"password", "passwd", "api_key", "apikey", "secret", "authorization", "cookie", "private_key", "access_token", "refresh_token", "auth_token"}
+	for _, term := range terms {
+		if strings.Contains(line, term) {
+			return true
+		}
+	}
+	for _, field := range strings.FieldsFunc(line, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_'
+	}) {
+		if field == "token" {
 			return true
 		}
 	}
@@ -711,7 +729,16 @@ func touchesGraphQLPublicExecution(path, text string) bool {
 
 func touchesEventPathOrText(path, text string) bool {
 	return reviewTextContainsAny(path, "/event", "/events", "/consumer", "/producer", "/kafka", "/pubsub", "/broker") ||
-		reviewTextContainsAny(text, "consumer", "producer", "publish", "subscribe", "kafka", "pubsub", "event")
+		reviewTextContainsAny(text, "consumer", "producer", "publish", "subscribe", "kafka", "pubsub", "broker")
+}
+
+func isReviewCodeOrConfigPath(path string) bool {
+	switch filepath.Ext(strings.ToLower(path)) {
+	case ".go", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".py", ".rb", ".rs", ".yaml", ".yml", ".json", ".proto", ".graphql", ".graphqls", ".sql":
+		return true
+	default:
+		return false
+	}
 }
 
 func cacheKeyLooksScoped(text string) bool {

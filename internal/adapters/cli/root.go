@@ -24,7 +24,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -45,6 +45,31 @@ func initCmd(ctx context.Context) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func cleanContextCmd() *cobra.Command {
+	var confirm bool
+	c := &cobra.Command{
+		Use:   "clean-context --confirm",
+		Short: "Remove generated agent context packs without touching source, memory, SQLite, or Neo4j",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.CleanGeneratedContext(p, confirm)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed generated context packs: %d\n", len(result.Removed))
+			if len(result.Skipped) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Skipped unsafe paths: %d\n", len(result.Skipped))
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&confirm, "confirm", false, "confirm removal of generated context pack files")
+	return c
 }
 
 func upCmd(ctx context.Context) *cobra.Command {

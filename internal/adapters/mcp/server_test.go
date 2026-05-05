@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +36,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if serverInfo["name"] != "agent-brain" {
 		t.Fatalf("unexpected server name: %v", serverInfo["name"])
 	}
+	if serverInfo["version"] != serverVersion {
+		t.Fatalf("unexpected server version: %v", serverInfo["version"])
+	}
 	if !strings.Contains(lines[1], "prepare_context") {
 		t.Fatalf("tools/list response does not include prepare_context: %s", lines[1])
 	}
@@ -45,6 +50,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "operation_status") {
 		t.Fatalf("tools/list response does not include operation_status: %s", lines[1])
+	}
+	if !strings.Contains(lines[1], "operation_list") || !strings.Contains(lines[1], "clean_context") {
+		t.Fatalf("tools/list response does not include operation maintenance tools: %s", lines[1])
 	}
 }
 
@@ -65,7 +73,7 @@ func TestUnknownToolReturnsToolError(t *testing.T) {
 func TestAsyncOperationStatus(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
 	done := make(chan struct{})
-	text := server.startAsync(context.Background(), "test_operation", nil, func(ctx context.Context) (string, error) {
+	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context) (string, error) {
 		defer close(done)
 		select {
 		case <-ctx.Done():
@@ -92,7 +100,7 @@ func TestAsyncOperationStatus(t *testing.T) {
 
 func TestAsyncOperationCancel(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
-	text := server.startAsync(context.Background(), "test_operation", nil, func(ctx context.Context) (string, error) {
+	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context) (string, error) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
@@ -107,6 +115,86 @@ func TestAsyncOperationCancel(t *testing.T) {
 	if !strings.Contains(status, `"status": "cancelled"`) {
 		t.Fatalf("unexpected operation status: %s", status)
 	}
+}
+
+func TestOperationListFiltersByRepoRoot(t *testing.T) {
+	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
+	one := operationIDFromText(t, server.startAsync(context.Background(), "one", "C:\\repo-one", nil, func(ctx context.Context) (string, error) {
+		return "one", nil
+	}))
+	_ = operationIDFromText(t, server.startAsync(context.Background(), "two", "C:\\repo-two", nil, func(ctx context.Context) (string, error) {
+		return "two", nil
+	}))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, err := server.operationStatus(one)
+		if err == nil && strings.Contains(status, `"completed"`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	list, err := server.operationList("C:\\repo-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(list, "repo-one") || strings.Contains(list, "repo-two") {
+		t.Fatalf("unexpected operation list: %s", list)
+	}
+}
+
+func TestDiscoverProjectPathsPrefersRepoRootArg(t *testing.T) {
+	root := t.TempDir()
+	p, err := discoverProjectPaths(map[string]any{"repo_root": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Root != root {
+		t.Fatalf("expected %q, got %q", root, p.Root)
+	}
+}
+
+func TestDiscoverProjectPathsUsesEnvRoot(t *testing.T) {
+	root := t.TempDir()
+	chdirForTest(t, t.TempDir())
+	t.Setenv("AGENT_BRAIN_REPO_ROOT", root)
+	p, err := discoverProjectPaths(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Root != root {
+		t.Fatalf("expected %q, got %q", root, p.Root)
+	}
+}
+
+func TestDiscoverProjectPathsPrefersProjectCWDOverEnvRoot(t *testing.T) {
+	cwdRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdRoot, ".agent-brain"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envRoot := t.TempDir()
+	chdirForTest(t, cwdRoot)
+	t.Setenv("AGENT_BRAIN_REPO_ROOT", envRoot)
+	p, err := discoverProjectPaths(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Root != cwdRoot {
+		t.Fatalf("expected cwd root %q, got %q", cwdRoot, p.Root)
+	}
+}
+
+func chdirForTest(t *testing.T, dir string) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previous)
+	})
 }
 
 func operationIDFromText(t *testing.T, text string) string {

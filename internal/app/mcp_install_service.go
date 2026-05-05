@@ -25,7 +25,8 @@ func InstallCodexMCP() (MCPInstallResult, error) {
 	}
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	command := detectAgentBrainCommand()
-	section := codexMCPSection(command)
+	repoRoot, _ := os.Getwd()
+	section := codexMCPSection(command, repoRoot)
 
 	var existing string
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -101,6 +102,7 @@ func claudeConfigPath() (string, error) {
 
 func installJSONMCP(configPath string) (MCPInstallResult, error) {
 	command := detectAgentBrainCommand()
+	repoRoot, _ := os.Getwd()
 	var existing []byte
 	var root map[string]any
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -119,6 +121,10 @@ func installJSONMCP(configPath string) (MCPInstallResult, error) {
 	servers["agent-brain"] = map[string]any{
 		"command": command,
 		"args":    []string{"mcp", "serve"},
+		"cwd":     repoRoot,
+		"env": map[string]string{
+			"AGENT_BRAIN_REPO_ROOT": repoRoot,
+		},
 	}
 	root["mcpServers"] = servers
 	next, err := json.MarshalIndent(root, "", "  ")
@@ -162,8 +168,11 @@ func detectAgentBrainCommand() string {
 	return "agent-brain"
 }
 
-func codexMCPSection(command string) string {
-	return fmt.Sprintf("[mcp_servers.agent-brain]\nenabled = true\ncommand = %q\nargs = [\"mcp\", \"serve\"]\n", command)
+func codexMCPSection(command, repoRoot string) string {
+	if repoRoot == "" {
+		repoRoot = "."
+	}
+	return fmt.Sprintf("[mcp_servers.agent-brain]\nenabled = true\ncommand = %q\nargs = [\"mcp\", \"serve\"]\nenv = { AGENT_BRAIN_REPO_ROOT = %q }\n", command, repoRoot)
 }
 
 func upsertTOMLSection(content, header, section string) string {

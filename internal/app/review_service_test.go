@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,5 +38,44 @@ func Register(r Router) { r.Get("/projects", handler) }
 	findings := contractDiffFindings(root, rel)
 	if len(findings) == 0 || findings[0].Title != "REST route registration modified" {
 		t.Fatalf("expected REST route finding: %#v", findings)
+	}
+}
+
+func TestReviewDiffIncludesUntrackedFiles(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	path := filepath.Join("internal", "app", "new_service.go")
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(`package app
+
+import "fmt"
+
+func Run() {
+	fmt.Println("debug")
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, summary, err := NewReviewService().ReviewDiff(context.Background(), root, filepath.Join(root, ".agent-brain", "rules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, filepath.ToSlash(path)) {
+		t.Fatalf("expected untracked file in summary: %s", summary)
+	}
+	if !hasFindingTitle(report.Findings, "Debug print in production path") {
+		t.Fatalf("expected debug print finding for untracked file, got %#v", report.Findings)
+	}
+}
+
+func runTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 }

@@ -99,12 +99,15 @@ func (s *ReviewService) ReviewPlan(planPath, rulesDir string) (ReviewReport, err
 }
 
 func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir string) (ReviewReport, string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "diff", "--name-status")
-	out, err := cmd.Output()
+	if err := ensureGitWorkTree(ctx, repoRoot); err != nil {
+		return ReviewReport{}, "", err
+	}
+	out, err := runGit(ctx, repoRoot, "diff", "--name-status", "--no-ext-diff")
 	if err != nil {
 		return ReviewReport{}, "", err
 	}
 	addedByFile, _ := addedLinesByFile(ctx, repoRoot)
+	untracked, _ := untrackedFiles(ctx, repoRoot)
 	var findings []domain.Finding
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -119,6 +122,22 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		}
 		findings = append(findings, contractDiffFindings(repoRoot, path)...)
 		findings = append(findings, enterpriseDiffFindings(repoRoot, path, addedByFile[filepath.ToSlash(path)])...)
+	}
+	for _, path := range untracked {
+		if containsString(files, path) {
+			continue
+		}
+		files = append(files, path)
+		if filesystem.IsForbiddenPath(path) {
+			findings = append(findings, domain.Finding{Severity: "critical", Title: "Forbidden file modified", Message: "Diff includes a path that agent-brain treats as secret or unsafe.", Path: path})
+			continue
+		}
+		addedText := addedByFile[path]
+		if addedText == "" {
+			addedText = readSmallTextFile(filepath.Join(repoRoot, filepath.FromSlash(path)), 256*1024)
+		}
+		findings = append(findings, contractDiffFindings(repoRoot, path)...)
+		findings = append(findings, enterpriseDiffFindings(repoRoot, path, addedText)...)
 	}
 	hasTests := false
 	for _, f := range files {
@@ -139,6 +158,44 @@ func (s *ReviewService) ReviewDiff(ctx context.Context, repoRoot, rulesDir strin
 		decision = domain.ChangesRequested
 	}
 	return ReviewReport{Decision: decision, Findings: findings}, renderDiffSummary(files, findings, relatedTests), nil
+}
+
+func untrackedFiles(ctx context.Context, repoRoot string) ([]string, error) {
+	out, err := runGit(ctx, repoRoot, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		path := filepath.ToSlash(strings.TrimSpace(line))
+		if path == "" || shouldSkipReviewPath(path) {
+			continue
+		}
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func shouldSkipReviewPath(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if shouldSkipReviewWalkDir(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func readSmallTextFile(path string, limit int64) string {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > limit {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || bytes.IndexByte(data, 0) >= 0 {
+		return ""
+	}
+	return string(data)
 }
 
 func hasTestableChanges(files []string) bool {
@@ -285,8 +342,7 @@ func sortRelatedTests(tests []string, signals testSignals) {
 }
 
 func addedLinesByFile(ctx context.Context, repoRoot string) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "diff", "--unified=0", "--no-ext-diff")
-	out, err := cmd.Output()
+	out, err := runGit(ctx, repoRoot, "diff", "--unified=0", "--no-ext-diff")
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +374,38 @@ func addedLinesByFile(ctx context.Context, repoRoot string) (map[string]string, 
 	}
 	flush()
 	return result, nil
+}
+
+func ensureGitWorkTree(ctx context.Context, repoRoot string) error {
+	out, err := runGit(ctx, repoRoot, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("repository root is not inside a git work tree: %s", repoRoot)
+	}
+	return nil
+}
+
+func runGit(ctx context.Context, repoRoot string, args ...string) ([]byte, error) {
+	if strings.TrimSpace(repoRoot) == "" {
+		return nil, fmt.Errorf("repository root is required")
+	}
+	gitArgs := append([]string{"-C", repoRoot, "-c", "core.quotepath=false"}, args...)
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return out, nil
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("git %s timed out or was cancelled for repo %s: %w", strings.Join(args, " "), repoRoot, ctx.Err())
+	}
+	return nil, fmt.Errorf("git %s failed for repo %s: %s", strings.Join(args, " "), repoRoot, msg)
 }
 
 func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
@@ -435,10 +523,29 @@ func secretAndInjectionFindings(path, text, codeText, originalPath string) []dom
 	if reviewTextContainsAny(codeText, "exec.command(", "exec.commandcontext(") && reviewTextContainsAny(codeText, "+", "fmt.sprintf") {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Possible command injection", Message: "Command arguments must not be built from concatenated or formatted untrusted input.", Path: originalPath})
 	}
-	if reviewTextContainsAny(codeText, "log.", "slog.", "zap.", "fmt.") && reviewTextContainsAny(text, "password", "token", "secret", "authorization", "cookie") {
+	if containsSensitiveLoggingRisk(text, codeText) {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Sensitive data logging risk", Message: "Logs must not include secrets, tokens, cookies, authorization headers, or full sensitive payloads.", Path: originalPath})
 	}
 	return findings
+}
+
+func containsSensitiveLoggingRisk(text, codeText string) bool {
+	codeLines := strings.Split(codeText, "\n")
+	rawLines := strings.Split(strings.ToLower(text), "\n")
+	for i, codeLine := range codeLines {
+		codeLine = strings.TrimSpace(codeLine)
+		if !reviewTextContainsAny(codeLine, "log.", "slog.", "zap.", "fmt.print", "fmt.fprint") {
+			continue
+		}
+		rawLine := codeLine
+		if i < len(rawLines) {
+			rawLine = rawLines[i]
+		}
+		if reviewTextContainsAny(rawLine, "password", "token", "secret", "authorization", "cookie") {
+			return true
+		}
+	}
+	return false
 }
 
 func containsHardcodedSecretAssignment(text, codeText string) bool {

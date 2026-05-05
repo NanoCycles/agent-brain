@@ -170,6 +170,15 @@ func Review(text string) bool {
 	}
 }
 
+func TestSensitiveLoggingRiskRequiresSensitiveLogLine(t *testing.T) {
+	if containsSensitiveLoggingRisk(`return fmt.Errorf("token is required")`, `return fmt.Errorf( )`) {
+		t.Fatal("fmt.Errorf should not be treated as sensitive logging")
+	}
+	if !containsSensitiveLoggingRisk(`log.Info("token", token)`, `log.info( , token)`) {
+		t.Fatal("expected sensitive logging risk")
+	}
+}
+
 func TestContractDiffFindingsIgnoresRoutePolicyStringLiterals(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join("internal", "app", "review_service.go")

@@ -230,15 +230,24 @@ On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
 
 Recommended agent flow:
 
-1. Call `start_task` with `task_path` or `topic` at the start of a task.
-2. Read the returned handoff, generated context pack, and approved system memory.
-3. Use `impact` for focused follow-up questions.
-4. Use `review_diff` before finalizing changes.
-5. Call `finish_task` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
+1. Prefer `start_task_async` or `prepare_context_async` for large repos, then poll `operation_status`.
+2. Use `start_task` only for small/fast repos or when the agent host has generous MCP timeouts.
+3. Read the returned handoff, generated context pack, and approved system memory.
+4. Use `impact` for focused follow-up questions.
+5. Use `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
+6. Call `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
-The MCP server exposes these tools: `start_task`, `finish_task`, `prepare_context`, `get_context_pack`, `impact`, `review_diff`, `status`, `doctor`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+The MCP server exposes these tools: `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `status`, `doctor`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
 
 Project information updates when `prepare_context` runs, unless `no_index` is true. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
+
+If an MCP host launches the server outside the project folder, pass `repo_root` in tool calls or rerun the installer from inside the target repository. Installers bind `AGENT_BRAIN_REPO_ROOT` to the current project so each local repo keeps its own SQLite database and Neo4j container/ports.
+
+To safely recreate generated context packs without touching source code, memory, SQLite, or Neo4j:
+
+```sh
+agent-brain clean-context --confirm
+```
 
 ## Language Support
 
@@ -334,6 +343,7 @@ Do not use `neo4j+s://localhost:7474` for local agent-brain containers. `7474` i
 - `agent-brain up`: verifies Docker and starts Neo4j through Docker Compose.
 - `agent-brain down`: stops local services without deleting data.
 - `agent-brain destroy --confirm`: removes this project's local Neo4j volume and SQLite metadata without touching source code, config, rules, context, or memory proposals.
+- `agent-brain clean-context --confirm`: removes generated context packs without touching source code, memory, SQLite, or Neo4j.
 - `agent-brain status`: prints Docker, Neo4j, SQLite, initialization, index, and graph stats.
 - `agent-brain doctor`: diagnoses Docker, Neo4j, SQLite, graph, and project wiring.
 - `agent-brain logs --tail 120`: prints Neo4j runtime logs for the current project.

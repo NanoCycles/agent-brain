@@ -118,13 +118,17 @@ func installJSONMCP(configPath string) (MCPInstallResult, error) {
 	if servers == nil {
 		servers = map[string]any{}
 	}
+	env := map[string]string{
+		"AGENT_BRAIN_REPO_ROOT": repoRoot,
+	}
+	if dockerPath, err := detectDockerCommand(); err == nil {
+		env["AGENT_BRAIN_DOCKER"] = dockerPath
+	}
 	servers["agent-brain"] = map[string]any{
 		"command": command,
 		"args":    []string{"mcp", "serve"},
 		"cwd":     repoRoot,
-		"env": map[string]string{
-			"AGENT_BRAIN_REPO_ROOT": repoRoot,
-		},
+		"env":     env,
 	}
 	root["mcpServers"] = servers
 	next, err := json.MarshalIndent(root, "", "  ")
@@ -168,11 +172,70 @@ func detectAgentBrainCommand() string {
 	return "agent-brain"
 }
 
+func detectDockerCommand() (string, error) {
+	if path := strings.TrimSpace(os.Getenv("AGENT_BRAIN_DOCKER")); path != "" {
+		if mcpInstallFileExists(path) {
+			return path, nil
+		}
+	}
+	if path, err := exec.LookPath("docker"); err == nil {
+		return path, nil
+	}
+	for _, path := range dockerCandidatePathsForMCP() {
+		if mcpInstallFileExists(path) {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("docker CLI not found")
+}
+
+func dockerCandidatePathsForMCP() []string {
+	if runtime.GOOS != "windows" {
+		return []string{"/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"}
+	}
+	var paths []string
+	for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramW6432")} {
+		if root != "" {
+			paths = append(paths, filepath.Join(root, "Docker", "Docker", "resources", "bin", "docker.exe"))
+		}
+	}
+	if root := os.Getenv("LOCALAPPDATA"); root != "" {
+		paths = append(paths, filepath.Join(root, "Docker", "resources", "bin", "docker.exe"))
+	}
+	paths = append(paths, `C:\Program Files\Docker\Docker\resources\bin\docker.exe`)
+	return uniqueMCPInstallStrings(paths)
+}
+
+func mcpInstallFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func uniqueMCPInstallStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func codexMCPSection(command, repoRoot string) string {
 	if repoRoot == "" {
 		repoRoot = "."
 	}
-	return fmt.Sprintf("[mcp_servers.agent-brain]\nenabled = true\ncommand = %q\nargs = [\"mcp\", \"serve\"]\nenv = { AGENT_BRAIN_REPO_ROOT = %q }\n", command, repoRoot)
+	env := fmt.Sprintf("AGENT_BRAIN_REPO_ROOT = %q", repoRoot)
+	if dockerPath, err := detectDockerCommand(); err == nil {
+		env += fmt.Sprintf(", AGENT_BRAIN_DOCKER = %q", dockerPath)
+	}
+	return fmt.Sprintf("[mcp_servers.agent-brain]\nenabled = true\ncommand = %q\nargs = [\"mcp\", \"serve\"]\nenv = { %s }\n", command, env)
 }
 
 func upsertTOMLSection(content, header, section string) string {

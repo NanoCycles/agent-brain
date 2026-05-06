@@ -249,6 +249,26 @@ If an MCP host launches the server outside the project folder, pass `repo_root` 
 
 Use `mcp_health` when an IDE agent appears to use the wrong project, reports Docker as unavailable, or times out. It prints the MCP process cwd, resolved repo root, env binding, runtime state, graph state, context pack count, and next recovery action.
 
+If PowerShell shows Docker available but the IDE/MCP reports `Docker: no`, the IDE probably launched the MCP server with a different environment. Run the installer again from inside the target repository and restart the IDE:
+
+```sh
+agent-brain mcp install-codex
+agent-brain mcp install-cursor
+agent-brain mcp install-claude
+agent-brain mcp install-copilot
+```
+
+The installers bind both `AGENT_BRAIN_REPO_ROOT` and, when detectable, `AGENT_BRAIN_DOCKER` so the MCP process can find Docker Desktop even when the IDE PATH is incomplete.
+
+After rebooting the machine, start Docker Desktop first, then run this in the project before asking the agent to code:
+
+```sh
+agent-brain doctor
+agent-brain agent-start --task .ai/tasks/TICKET.md --budget cavernicola
+```
+
+`agent-start` will initialize local folders, wait for Docker, start the per-project Neo4j container if needed, index incrementally, and generate the context pack.
+
 To safely recreate generated context packs without touching source code, memory, SQLite, or Neo4j:
 
 ```sh

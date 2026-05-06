@@ -29,7 +29,7 @@ type Server struct {
 	operations *operationStore
 }
 
-const serverVersion = "0.1.16"
+const serverVersion = "0.1.17"
 
 func NewServer(in io.Reader, out io.Writer) *Server {
 	return &Server{in: in, out: out, operations: newOperationStore()}
@@ -1043,7 +1043,7 @@ func doctor(ctx context.Context, p paths.ProjectPaths) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "agent-brain doctor\n")
 	fmt.Fprintf(&b, "Repo root: %s\nProject ID: %s\nRuntime namespace: %s\n", p.Root, cfg.ProjectID, cfg.RuntimeNamespace)
-	fmt.Fprintf(&b, "Config: %s\nDocker: %s\nNeo4j: %s (%s)\nSQLite: %s\n", yesNo(fileExists(p.ConfigPath)), yesNo(report.DockerAvailable), yesNo(report.Neo4jRunning), cfg.Neo4jURI, p.SQLitePath)
+	fmt.Fprintf(&b, "Config: %s\nDocker: %s\nDocker CLI: %s\nNeo4j: %s (%s)\nSQLite: %s\n", yesNo(fileExists(p.ConfigPath)), yesNo(report.DockerAvailable), dockerCLIPathForDisplay(), yesNo(report.Neo4jRunning), cfg.Neo4jURI, p.SQLitePath)
 	fmt.Fprintf(&b, "Indexed files: %d\nLast index: %s\nGraph: %d nodes / %d relationships\nContext packs: %d\n", fileCount, valueOr(lastIndex, "none"), report.GraphStats.Nodes, report.GraphStats.Relationships, contextStats.GeneratedPacks)
 	fmt.Fprintf(&b, "Capabilities: GraphQL=%s REST=%s gRPC=%s Events=%s Persistence=%s Tests=%s MainLanguage=%s\n", yesNo(caps.HasGraphQL), yesNo(caps.HasREST), yesNo(caps.HasGRPC), yesNo(caps.HasEvents), yesNo(caps.HasPersistence), yesNo(caps.HasTests), caps.MainLanguage)
 	for _, action := range doctorActions(report, fileCount, caps, contextStats) {
@@ -1065,7 +1065,7 @@ func mcpHealth(ctx context.Context, p paths.ProjectPaths) (string, error) {
 func doctorActions(report app.StatusReport, fileCount int, caps domain.RepoCapabilities, contextStats app.ContextOutputStats) []string {
 	var actions []string
 	if !report.DockerAvailable {
-		actions = append(actions, "Start Docker Desktop, then run agent-brain up.")
+		actions = append(actions, "Start Docker Desktop, then restart the IDE/agent MCP host or rerun agent-brain mcp install-* from the target repo.")
 	}
 	if report.DockerAvailable && !report.Neo4jRunning {
 		actions = append(actions, "Run agent-brain up.")
@@ -1188,6 +1188,14 @@ func valueOr(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func dockerCLIPathForDisplay() string {
+	path, err := dockerruntime.DockerCLIPath()
+	if err != nil {
+		return "not found"
+	}
+	return path
 }
 
 func fileExists(path string) bool {

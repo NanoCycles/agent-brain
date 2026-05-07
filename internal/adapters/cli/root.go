@@ -663,17 +663,27 @@ func indexCmd(ctx context.Context) *cobra.Command {
 
 func contextCmd(ctx context.Context) *cobra.Command {
 	var task string
+	var topic string
 	var budget string
 	c := &cobra.Command{
 		Use:   "context",
 		Short: "Generate compact agent context pack",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if task == "" {
-				return fmt.Errorf("--task is required")
+			if task == "" && topic == "" {
+				return fmt.Errorf("--task or --topic is required")
+			}
+			if task != "" && topic != "" {
+				return fmt.Errorf("use only one of --task or --topic")
 			}
 			p, err := paths.Discover(".")
 			if err != nil {
 				return err
+			}
+			if topic != "" {
+				task, err = writeTopicTaskFile(p, topic)
+				if err != nil {
+					return err
+				}
 			}
 			store, err := sqlstore.New(p.SQLitePath)
 			if err != nil {
@@ -690,6 +700,7 @@ func contextCmd(ctx context.Context) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&topic, "topic", "", "topic text")
 	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget: cavernicola, compact, standard, or deep")
 	return c
 }
@@ -992,6 +1003,23 @@ func graphOrNil(configPath string) *neo.Store {
 		return nil
 	}
 	return graph
+}
+
+func writeTopicTaskFile(p paths.ProjectPaths, topic string) (string, error) {
+	taskID := app.TaskIDFromPath(topic + ".md")
+	if taskID == "task" {
+		taskID = "topic"
+	}
+	taskDir := filepath.Join(p.Root, ".ai", "tasks")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(taskDir, taskID+".md")
+	data := []byte("# " + taskID + "\n\n" + topic + "\n")
+	if err := (filesystem.LocalFS{}).WriteFileIfMissing(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func loadOrDefaultConfig(p paths.ProjectPaths) (app.Config, error) {

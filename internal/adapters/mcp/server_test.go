@@ -111,6 +111,46 @@ func TestAsyncOperationStatus(t *testing.T) {
 	}
 }
 
+func TestLongSynchronousToolDefaultsToAsyncOperation(t *testing.T) {
+	root, err := os.MkdirTemp("", "agent-brain-mcp-default-async-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for i := 0; i < 20; i++ {
+			if err := os.RemoveAll(root); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
+	text, err := server.callTool(context.Background(), "start_task", map[string]any{
+		"repo_root": root,
+		"topic":     "investigate schema cache",
+		"no_index":  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Operation started:") || !strings.Contains(text, "operation_status") {
+		t.Fatalf("expected default async operation response, got %s", text)
+	}
+	id := operationIDFromText(t, text)
+	_, _ = server.operationCancel(id)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, err := server.operationStatus(id)
+		if err == nil && strings.Contains(status, `"cancelled"`) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestAsyncOperationCancel(t *testing.T) {
 	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
 	text := server.startAsync(context.Background(), "test_operation", "C:\\repo", nil, func(ctx context.Context, progress app.ProgressFunc) (string, error) {

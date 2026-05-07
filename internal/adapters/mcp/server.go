@@ -29,7 +29,7 @@ type Server struct {
 	operations *operationStore
 }
 
-const serverVersion = "0.1.17"
+const serverVersion = "0.1.18"
 
 func NewServer(in io.Reader, out io.Writer) *Server {
 	return &Server{in: in, out: out, operations: newOperationStore()}
@@ -183,6 +183,7 @@ func toolDefinitions() []map[string]any {
 			"task_path": map[string]any{"type": "string", "description": "Path to .ai/tasks/<TASK>.md"},
 			"topic":     map[string]any{"type": "string", "description": "Free text task/topic when no task file exists"},
 			"fast":      map[string]any{"type": "boolean"},
+			"sync":      map[string]any{"type": "boolean", "description": "Run synchronously. Default false because IDE MCP hosts often have short deadlines."},
 			"repo_root": repoRoot,
 		}),
 		tool("finish_task", "Agent-first workflow: review current diff and generate implementation/domain memory proposals for human approval.", map[string]any{
@@ -195,6 +196,7 @@ func toolDefinitions() []map[string]any {
 			"budget":    map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
 			"fast":      map[string]any{"type": "boolean", "description": "Skip reindex if the last index is recent"},
 			"no_index":  map[string]any{"type": "boolean", "description": "Generate context from existing metadata without indexing"},
+			"sync":      map[string]any{"type": "boolean", "description": "Run synchronously. Default false because IDE MCP hosts often have short deadlines."},
 			"repo_root": repoRoot,
 		}),
 		tool("start_task_async", "Start agent-first context preparation in the background and return an operation_id immediately. Use operation_status to poll progress/result.", map[string]any{
@@ -219,6 +221,7 @@ func toolDefinitions() []map[string]any {
 			"no_index":         map[string]any{"type": "boolean"},
 			"bootstrap_memory": map[string]any{"type": "boolean", "description": "Generate a domain-memory proposal"},
 			"memory_area":      map[string]any{"type": "string", "description": "Memory area: all, graphql, auth, billing, events, persistence, application, domain"},
+			"sync":             map[string]any{"type": "boolean", "description": "Run synchronously. Default false because IDE MCP hosts often have short deadlines."},
 			"repo_root":        repoRoot,
 		}),
 		tool("agent_start_async", "Run the complete agent startup workflow in the background. Use operation_status to poll progress/result.", map[string]any{
@@ -339,6 +342,12 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	}
 	switch name {
 	case "start_task":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "start_task", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				args["progress"] = progress
+				return startTask(ctx, p, args)
+			}), nil
+		}
 		return startTask(ctx, p, args)
 	case "start_task_async":
 		return s.startAsync(ctx, "start_task", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
@@ -353,6 +362,12 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 			return finishTask(ctx, p, args)
 		}), nil
 	case "prepare_context":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "prepare_context", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				args["progress"] = progress
+				return prepareContext(ctx, p, args)
+			}), nil
+		}
 		return prepareContext(ctx, p, args)
 	case "prepare_context_async":
 		return s.startAsync(ctx, "prepare_context", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
@@ -360,6 +375,12 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 			return prepareContext(ctx, p, args)
 		}), nil
 	case "agent_start":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "agent_start", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				args["progress"] = progress
+				return agentStart(ctx, p, args)
+			}), nil
+		}
 		return agentStart(ctx, p, args)
 	case "agent_start_async":
 		return s.startAsync(ctx, "agent_start", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {

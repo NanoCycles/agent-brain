@@ -71,6 +71,33 @@ func Run() {
 	}
 }
 
+func TestEnterpriseDiffFindingsDoNotRequireBoundaryProofInTests(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join("internal", "adapters", "mcp", "server_test.go")
+	full := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`package mcp
+
+import "testing"
+
+func TestToolMentionsGraphQLBoundary(t *testing.T) {
+	t.Log("review GraphQL public boundary auth validation event")
+}
+`)
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := enterpriseDiffFindings(root, rel, string(data))
+	for _, finding := range findings {
+		switch finding.Title {
+		case "Boundary authorization not evident", "Boundary input validation not evident", "Event idempotency not evident":
+			t.Fatalf("unexpected production-boundary finding for test file: %#v", finding)
+		}
+	}
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)

@@ -442,13 +442,13 @@ func enterpriseDiffFindings(repoRoot, path, addedText string) []domain.Finding {
 	if touchesCachePathOrText(p, text) && (strings.Contains(text, "tenant") || strings.Contains(text, "project")) && !cacheKeyLooksScoped(fullText) {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Cache key tenant scope unclear", Message: "Cache changes for tenant/project data should make tenant/project scope visible in the cache key.", Path: path})
 	}
-	if touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "auth", "authorize", "permission", "middleware") {
+	if !testPath && touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "auth", "authorize", "permission", "middleware") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary authorization not evident", Message: "Public boundary changes should visibly preserve auth/authz middleware or permission checks.", Path: path})
 	}
-	if touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "valid", "bind", "decode", "sanitize") {
+	if !testPath && touchesPublicBoundaryPathOrText(p, text) && !reviewTextContainsAny(fullText, "valid", "bind", "decode", "sanitize") {
 		findings = append(findings, domain.Finding{Severity: "high", Title: "Boundary input validation not evident", Message: "HTTP/GraphQL/RPC/event boundary changes should visibly validate or decode inputs safely.", Path: path})
 	}
-	if isReviewCodeOrConfigPath(p) && touchesEventPathOrText(p, codeText) && !reviewTextContainsAny(fullText, "idempot", "dedup", "processed", "duplicate") {
+	if !testPath && isReviewCodeOrConfigPath(p) && touchesEventPathOrText(p, codeText) && !reviewTextContainsAny(fullText, "idempot", "dedup", "processed", "duplicate") {
 		findings = append(findings, domain.Finding{Severity: "critical", Title: "Event idempotency not evident", Message: "Event consumer/producer changes must show duplicate delivery/idempotency handling.", Path: path})
 	}
 	if touchesAuditPathOrText(p, text) && !strings.Contains(fullText, "transaction") && !strings.Contains(fullText, "tx.") {

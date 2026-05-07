@@ -63,6 +63,9 @@ func TestServerInitializeAndListTools(t *testing.T) {
 	if !strings.Contains(lines[1], "github_pr_comments_async") {
 		t.Fatalf("tools/list response does not include GitHub async tool: %s", lines[1])
 	}
+	if !strings.Contains(lines[1], "change_start") || !strings.Contains(lines[1], "plan_gate") || !strings.Contains(lines[1], "review_simulate") {
+		t.Fatalf("tools/list response does not include change intelligence tools: %s", lines[1])
+	}
 }
 
 func TestUnknownToolReturnsToolError(t *testing.T) {
@@ -138,6 +141,46 @@ func TestLongSynchronousToolDefaultsToAsyncOperation(t *testing.T) {
 	}
 	if !strings.Contains(text, "Operation started:") || !strings.Contains(text, "operation_status") {
 		t.Fatalf("expected default async operation response, got %s", text)
+	}
+	id := operationIDFromText(t, text)
+	_, _ = server.operationCancel(id)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, err := server.operationStatus(id)
+		if err == nil && strings.Contains(status, `"cancelled"`) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestChangeStartDefaultsToAsyncOperation(t *testing.T) {
+	root, err := os.MkdirTemp("", "agent-brain-mcp-change-start-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for i := 0; i < 20; i++ {
+			if err := os.RemoveAll(root); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(strings.NewReader(""), &bytes.Buffer{})
+	text, err := server.callTool(context.Background(), "change_start", map[string]any{
+		"repo_root": root,
+		"topic":     "GraphQL nested count bug",
+		"no_index":  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Operation started:") || !strings.Contains(text, "change_start") {
+		t.Fatalf("expected async change_start operation, got %s", text)
 	}
 	id := operationIDFromText(t, text)
 	_, _ = server.operationCancel(id)

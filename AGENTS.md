@@ -4,16 +4,18 @@ This repository is designed for AI coding agents first. Keep token usage low and
 
 ## Required Flow
 
-1. Before editing code, call the `agent-brain` MCP tool `start_task` with `task_path` or `topic`.
-2. Read the generated context pack and approved system memory.
+1. Before editing code, call the `agent-brain` MCP tool `change_start` with `task_path` or `topic`. Use `budget = "cavernicola"` unless the human approves more context.
+2. Read the generated context pack, approved system memory, change scope, and implementation checklist.
 3. Open only the top-ranked files first.
 4. Use `impact` only for focused follow-up questions.
 5. Do not broadly scan the repository unless context quality is low and the human approves broader exploration.
-6. Implement the smallest safe change.
-7. Run focused tests, then broader tests when risk or touched surface requires it.
-8. Before final response, call `review_diff`.
-9. After validation, call `finish_task` to generate implementation and domain memory proposals.
-10. Do not apply memory automatically. Ask for human approval before `apply_domain_memory` or memory apply commands.
+6. If the change scope is `large` or `critical`, write a short plan and call `plan_gate` before broad edits.
+7. Implement the smallest safe change.
+8. For large or critical changes, call `change_checkpoint` after each logical edit batch.
+9. Run focused tests, then broader tests when risk or touched surface requires it.
+10. Before final response, call `review_simulate` and `review_diff`.
+11. After validation, call `change_finish` to generate implementation and domain memory proposals.
+12. Do not apply memory automatically. Ask for human approval before `apply_domain_memory` or memory apply commands.
 
 ## Review Comment Repair Flow
 
@@ -24,7 +26,7 @@ When external review comments exist, save them to a local markdown/text file and
 3. contract, authorization, tenant isolation, data integrity, N+1, and missing test issues.
 4. advisory nits only after gated issues are clean.
 
-After each repair pass, run focused tests and `review_diff`. If comments mention public schema/proto/routes, ask for human approval before changing contracts.
+After each repair pass, run focused tests, `review_simulate`, and `review_diff`. If comments mention public schema/proto/routes, ask for human approval before changing contracts. Use `review_comments` or `github_pr_comments` with `learn = true` only to create a memory proposal; never apply it without human approval.
 
 ## Safety Rules
 

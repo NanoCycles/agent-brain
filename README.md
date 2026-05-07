@@ -150,6 +150,22 @@ sequenceDiagram
   H->>B: memory apply if approved
 ```
 
+Large or security-sensitive changes use an extra review-prevention loop:
+
+```mermaid
+flowchart TD
+  Start["change_start / agent_start_async"] --> Scope["Classify change scope\nsmall / medium / large / critical"]
+  Scope --> Checklist["Context pack includes\nimplementation checklist"]
+  Checklist --> Plan{"Large or critical?"}
+  Plan -- "yes" --> Gate["plan_gate\nrejects weak plans before editing"]
+  Plan -- "no" --> Edit["Focused implementation"]
+  Gate --> Edit
+  Edit --> Checkpoint["change_checkpoint\nreview simulator"]
+  Checkpoint --> Tests["Focused + required tests"]
+  Tests --> Sim["review_simulate / review_diff"]
+  Sim --> Finish["change_finish\nmemory proposals"]
+```
+
 ## Flow With Codex/Cursor
 
 Agents should also read `AGENTS.md` in this repository. It is the compact operating contract for coding agents using `agent-brain`.
@@ -232,16 +248,29 @@ On Windows, use the installed executable path if `agent-brain` is not on `PATH`:
 
 Recommended agent flow:
 
-1. Prefer `agent_start_async` for normal coding tasks, then poll `operation_status`.
-2. Use `start_task_async` or `prepare_context_async` only when you need a narrower operation.
-3. Read the returned handoff, generated context pack, and approved system memory.
-4. Use `impact` for focused follow-up questions.
-5. Use `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
-6. Call `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
+1. Prefer `change_start` / `change_start_async` for real implementation work. It prepares context, classifies scope, and returns required gates.
+2. Use `agent_start_async` when you only need the classic context + memory startup.
+3. Read the returned handoff, generated context pack, approved system memory, and implementation checklist.
+4. If the change is large or critical, write a short plan and call `plan_gate` before broad edits.
+5. Use `impact` for focused follow-up questions.
+6. Use `change_checkpoint` after each logical edit batch.
+7. Use `review_simulate` and `review_diff_async` before finalizing changes when the IDE has short tool deadlines.
+8. Call `change_finish` or `finish_task_async` after validation. It reviews the diff and proposes implementation/domain memory for human approval.
 
 Async operations keep a detailed event trail. Agents should poll `operation_status` and read the `events` array instead of retrying blindly on long repository indexes.
 
-The MCP server exposes these tools: `agent_start`, `agent_start_async`, `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `review_comments`, `github_pr_comments`, `github_pr_comments_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `bootstrap_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+The MCP server exposes these tools: `change_start`, `change_start_async`, `change_checkpoint`, `change_checkpoint_async`, `change_finish`, `change_finish_async`, `plan_gate`, `review_simulate`, `agent_start`, `agent_start_async`, `start_task`, `start_task_async`, `finish_task`, `finish_task_async`, `prepare_context`, `prepare_context_async`, `operation_status`, `operation_cancel`, `operation_list`, `get_context_pack`, `impact`, `review_diff`, `review_diff_async`, `review_comments`, `github_pr_comments`, `github_pr_comments_async`, `status`, `doctor`, `mcp_health`, `clean_context`, `memory_proposal`, `propose_domain_memory`, `bootstrap_domain_memory`, `apply_domain_memory`, `get_system_memory`, and `handoff`.
+
+`plan_gate` and `review_simulate` are intentionally strict. They try to catch the same classes of feedback that enterprise reviewers and Claude/GitHub review bots usually flag: missing regression tests, public contract changes without approval, GraphQL N+1, missing tenant/project isolation, event idempotency gaps, cache-key scope issues, transaction consistency, debug prints, sensitive logging, missing context propagation, and architecture boundary leaks.
+
+External review comments can be imported and turned into a repair plan:
+
+```sh
+agent-brain github review-comments --pr 123 --review --learn
+agent-brain review-comments --file .ai/reviews/PR-123-comments.md --learn
+```
+
+`--learn` creates a domain-memory proposal from recurring review findings. It does not apply memory automatically; humans still approve memory before it is saved to `.agent-brain/memory`, SQLite, and Neo4j.
 
 Project information updates when `prepare_context` or `agent_start` runs, unless `no_index` is true. Indexing uses per-file hashes and updates Neo4j incrementally when prior metadata exists: changed/deleted file subgraphs are replaced precisely, stale SQLite rows are removed, and unchanged file graph data is left intact. With `fast` enabled, indexing is skipped when the existing index is recent. Rules and applied memory remain local under `.agent-brain/` and `.ai/`, so context improves over time without using cloud services.
 
@@ -257,6 +286,18 @@ agent-brain mcp install-cursor
 agent-brain mcp install-claude
 agent-brain mcp install-copilot
 ```
+
+## Agent Skills And Stores
+
+Today, the most portable way to make `agent-brain` appear inside agents is MCP plus a small repository instruction file:
+
+- Codex: use `agent-brain mcp install-codex` and keep `AGENTS.md` in the repo. Codex reads repo instructions and calls MCP tools.
+- Cursor: use `agent-brain mcp install-cursor`; add project rules telling Cursor to call `change_start` before edits.
+- Claude Desktop/Claude Code: use `agent-brain mcp install-claude`; keep `CLAUDE.md` or `AGENTS.md` with the required flow.
+- GitHub Copilot: use `agent-brain mcp install-copilot`; this writes `.vscode/mcp.json` for the workspace.
+- Antigravity or other agent IDEs: configure a stdio MCP server with command `agent-brain`, args `["mcp", "serve"]`, and cwd/repo_root set to the target repo.
+
+For marketplace-style distribution, publish the binary/package normally (`npm`, Chocolatey, GitHub Releases) and publish a tiny “agent-brain skill/rule pack” per ecosystem that only contains instructions. The skill should not duplicate code; it should tell the agent to use the MCP tools and the cavernicola budget by default.
 
 The installers bind both `AGENT_BRAIN_REPO_ROOT` and, when detectable, `AGENT_BRAIN_DOCKER` so the MCP process can find Docker Desktop even when the IDE PATH is incomplete.
 

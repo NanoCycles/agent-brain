@@ -553,6 +553,7 @@ func BuildContextPack(ctx context.Context, repoRoot string, metaFiles []domain.I
 	quality := ComputeContextQuality(analysis, caps, candidates, ruleGroups, graphAvailable)
 	risks := BuildRisks(analysis)
 	tests := SuggestTests(analysis)
+	scope := ClassifyChangeScope(analysis, caps, candidates, task.Content)
 	return domain.ContextPack{
 		TaskID: task.ID, GeneratedAt: time.Now().UTC(), AgentBudget: domain.AgentBudget{OpenTopFilesFirst: min(2, len(candidates)), ExplorationMode: "minimal", TokenMode: BudgetCavernicola},
 		TaskSummary: summarize(task.Content), TaskAnalysis: analysis, ContextQuality: quality, RepositoryCapabilities: caps,
@@ -560,7 +561,7 @@ func BuildContextPack(ctx context.Context, repoRoot string, metaFiles []domain.I
 		RelevantArchitectureRules: ruleGroups.Architecture, RelevantBusinessTechnicalRules: append(append(ruleGroups.Contracts, ruleGroups.Security...), ruleGroups.Testing...),
 		RelevantRules: ruleGroups, LikelyAffectedLayers: analysis.AffectedLayers, LikelyRelevantFiles: candidates,
 		PublicContractImpact: analysis.ContractImpact, Risks: risks, SecurityRisks: risks.Security, ConcurrencyRisks: risks.Concurrency,
-		MemoryPerformanceRisks: risks.MemoryPerformance, SuggestedTests: tests, RecommendedStrategy: RecommendedStrategy(analysis),
+		MemoryPerformanceRisks: risks.MemoryPerformance, SuggestedTests: tests, RecommendedStrategy: RecommendedStrategy(analysis), ImplementationChecklist: BuildImplementationChecklist(analysis, scope),
 		KnownPitfalls: knownPitfalls(analysis, caps),
 		RecommendedAgentInstructions: []string{
 			"Open only the top N files first.",

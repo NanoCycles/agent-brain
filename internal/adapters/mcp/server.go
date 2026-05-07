@@ -261,14 +261,60 @@ func toolDefinitions() []map[string]any {
 			"budget": map[string]any{"type": "string", "description": "Token budget: cavernicola, compact, standard, or deep"},
 		}),
 		tool("review_diff", "Review current git diff for risks, contracts, tests, forbidden files, and rule violations. Read-only.", map[string]any{"repo_root": repoRoot}),
+		tool("plan_gate", "Gate an agent implementation plan before broad edits. Returns APPROVED / CHANGES_REQUESTED / REJECTED plus checklist.", map[string]any{
+			"plan_path": map[string]any{"type": "string", "description": "Markdown plan path"},
+			"task_path": map[string]any{"type": "string", "description": "Optional task markdown path"},
+			"repo_root": repoRoot,
+		}),
+		tool("review_simulate", "Simulate likely external/enterprise code review findings from the current diff. Read-only.", map[string]any{
+			"task_path": map[string]any{"type": "string", "description": "Optional task markdown path"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_start", "Agent-first large-change workflow: prepare context, classify scope, return checklist and gates. Defaults async for IDE MCP hosts.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"topic":     map[string]any{"type": "string"},
+			"budget":    map[string]any{"type": "string"},
+			"fast":      map[string]any{"type": "boolean"},
+			"no_index":  map[string]any{"type": "boolean"},
+			"sync":      map[string]any{"type": "boolean"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_start_async", "Start the large-change workflow in the background. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"topic":     map[string]any{"type": "string"},
+			"budget":    map[string]any{"type": "string"},
+			"fast":      map[string]any{"type": "boolean"},
+			"no_index":  map[string]any{"type": "boolean"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_checkpoint", "Run a mid-change external review simulator checkpoint. Defaults async for IDE MCP hosts.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"sync":      map[string]any{"type": "boolean"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_checkpoint_async", "Run a mid-change checkpoint in the background. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_finish", "Finish a change with review simulation and memory proposals. Defaults async for IDE MCP hosts.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"sync":      map[string]any{"type": "boolean"},
+			"repo_root": repoRoot,
+		}),
+		tool("change_finish_async", "Run final change review and memory proposals in the background. Use operation_status to poll progress/result.", map[string]any{
+			"task_path": map[string]any{"type": "string"},
+			"repo_root": repoRoot,
+		}),
 		tool("review_comments", "Turn external code review comments into a prioritized agent repair plan. Read-only.", map[string]any{
 			"comments_path": map[string]any{"type": "string", "description": "Markdown/text file with review comments"},
+			"learn":         map[string]any{"type": "boolean", "description": "Create a domain-memory proposal from recurring review comments; does not apply it"},
 		}),
 		tool("github_pr_comments", "Import GitHub PR review comments into .ai/reviews and return an agent repair plan. Requires GITHUB_TOKEN/GH_TOKEN or authenticated gh CLI.", map[string]any{
 			"pr":           map[string]any{"type": "string", "description": "PR number or GitHub pull request URL"},
 			"repo":         map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
 			"token":        map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
 			"review":       map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+			"learn":        map[string]any{"type": "boolean", "description": "Create a domain-memory proposal from recurring review comments; does not apply it"},
 			"post_summary": map[string]any{"type": "boolean", "description": "Post an agent-brain import summary comment back to the PR"},
 			"repo_root":    repoRoot,
 		}),
@@ -277,6 +323,7 @@ func toolDefinitions() []map[string]any {
 			"repo":         map[string]any{"type": "string", "description": "Optional owner/repo; defaults to git origin"},
 			"token":        map[string]any{"type": "string", "description": "Optional GitHub token; defaults to GITHUB_TOKEN/GH_TOKEN"},
 			"review":       map[string]any{"type": "boolean", "description": "Run review_comments after import"},
+			"learn":        map[string]any{"type": "boolean"},
 			"post_summary": map[string]any{"type": "boolean", "description": "Post an agent-brain import summary comment back to the PR"},
 			"repo_root":    repoRoot,
 		}),
@@ -409,6 +456,49 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 			progress(85, "rendering review findings")
 			return fmt.Sprintf("%s\nDecision: %s", summary, report.Decision), nil
 		}), nil
+	case "plan_gate":
+		return planGate(ctx, p, args)
+	case "review_simulate":
+		return reviewSimulate(ctx, p, args)
+	case "change_start":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "change_start", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				args["progress"] = progress
+				return changeStart(ctx, p, args)
+			}), nil
+		}
+		return changeStart(ctx, p, args)
+	case "change_start_async":
+		return s.startAsync(ctx, "change_start", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			args["progress"] = progress
+			return changeStart(ctx, p, args)
+		}), nil
+	case "change_checkpoint":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "change_checkpoint", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				progress(25, "running review simulator checkpoint")
+				return reviewSimulate(ctx, p, args)
+			}), nil
+		}
+		return reviewSimulate(ctx, p, args)
+	case "change_checkpoint_async":
+		return s.startAsync(ctx, "change_checkpoint", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			progress(25, "running review simulator checkpoint")
+			return reviewSimulate(ctx, p, args)
+		}), nil
+	case "change_finish":
+		if !boolArg(args, "sync") {
+			return s.startAsync(ctx, "change_finish", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+				args["progress"] = progress
+				return changeFinish(ctx, p, args)
+			}), nil
+		}
+		return changeFinish(ctx, p, args)
+	case "change_finish_async":
+		return s.startAsync(ctx, "change_finish", p.Root, args, func(ctx context.Context, progress app.ProgressFunc) (string, error) {
+			args["progress"] = progress
+			return changeFinish(ctx, p, args)
+		}), nil
 	case "operation_status":
 		return s.operationStatus(stringArg(args, "operation_id"))
 	case "operation_cancel":
@@ -427,7 +517,17 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 			return "", fmt.Errorf("comments_path is required")
 		}
 		_, summary, err := app.NewReviewService().ReviewComments(path)
-		return summary, err
+		if err != nil {
+			return "", err
+		}
+		if boolArg(args, "learn") {
+			proposal, memory, err := app.ReviewCommentsLearningProposal(path, p.AIMemoryProposals)
+			if err != nil {
+				return "", err
+			}
+			summary += fmt.Sprintf("\nReview learning proposal: %s\nRules: %d Invariants: %d\nHuman approval required before apply_domain_memory.", proposal, len(memory.BusinessRules), len(memory.Invariants))
+		}
+		return summary, nil
 	case "github_pr_comments":
 		return githubPRComments(ctx, p, args)
 	case "github_pr_comments_async":
@@ -847,6 +947,78 @@ func agentStart(ctx context.Context, p paths.ProjectPaths, args map[string]any) 
 	return app.RenderAgentWorkflowResult(result), nil
 }
 
+func changeStart(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	if progress := progressArg(args); progress != nil {
+		progress(15, "starting change workflow")
+	}
+	text, err := agentStart(ctx, p, args)
+	if err != nil {
+		return "", err
+	}
+	contextPath := contextPathFromArgs(p, args)
+	var packText string
+	if contextPath != "" {
+		if data, err := os.ReadFile(contextPath); err == nil {
+			packText = string(data)
+		}
+	}
+	return text + "\n\nChange workflow gates:\n- If scope is large/critical, create a short plan and call plan_gate before broad edits.\n- Use change_checkpoint after each logical edit batch.\n- Use review_simulate before final response.\n- Use change_finish after tests to generate memory proposals.\n\nCurrent context excerpt:\n" + firstText(packText, 3000), nil
+}
+
+func planGate(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	planPath := stringArg(args, "plan_path")
+	if planPath == "" {
+		return "", fmt.Errorf("plan_path is required")
+	}
+	_, summary, err := app.NewChangeIntelligenceService().PlanGate(ctx, p.Root, p.RulesDir, planPath, stringArg(args, "task_path"))
+	return summary, err
+}
+
+func reviewSimulate(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	reviewCtx, cancel := reviewContext(ctx)
+	defer cancel()
+	_, summary, err := app.NewChangeIntelligenceService().ReviewSimulate(reviewCtx, p.Root, p.RulesDir, stringArg(args, "task_path"))
+	return summary, err
+}
+
+func changeFinish(ctx context.Context, p paths.ProjectPaths, args map[string]any) (string, error) {
+	if progress := progressArg(args); progress != nil {
+		progress(20, "simulating external review")
+	}
+	summary, err := reviewSimulate(ctx, p, args)
+	if err != nil {
+		return "", err
+	}
+	taskPath := stringArg(args, "task_path")
+	if taskPath == "" {
+		return summary + "\nNo task_path provided; memory proposals skipped.", nil
+	}
+	if progress := progressArg(args); progress != nil {
+		progress(70, "generating memory proposals")
+	}
+	store, err := sqlstore.New(p.SQLitePath)
+	if err != nil {
+		return "", err
+	}
+	defer store.Close()
+	_ = store.Init(ctx)
+	memPath, _ := app.NewMemoryService(store).GenerateProposal(ctx, p.Root, taskPath, p.AIMemoryProposals)
+	graph := graphOrNil(p.ConfigPath)
+	if graph != nil {
+		defer graph.Close(ctx)
+	}
+	domainPath, _, _ := app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, taskPath, p.AIMemoryProposals, "")
+	var b strings.Builder
+	b.WriteString(summary)
+	if memPath != "" {
+		fmt.Fprintf(&b, "\nImplementation memory proposal: %s", memPath)
+	}
+	if domainPath != "" {
+		fmt.Fprintf(&b, "\nDomain memory proposal: %s\nHuman approval required before apply_domain_memory.", domainPath)
+	}
+	return b.String(), nil
+}
+
 func proposeDomainMemory(ctx context.Context, p paths.ProjectPaths, taskPath, area string) (string, error) {
 	store, err := sqlstore.New(p.SQLitePath)
 	if err != nil {
@@ -914,6 +1086,13 @@ func githubPRComments(ctx context.Context, p paths.ProjectPaths, args map[string
 		}
 		b.WriteString("\n")
 		b.WriteString(summary)
+	}
+	if boolArg(args, "learn") {
+		proposal, memory, err := app.ReviewCommentsLearningProposal(result.Path, p.AIMemoryProposals)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "\nReview learning proposal: %s\nRules: %d Invariants: %d\nHuman approval required before apply_domain_memory.\n", proposal, len(memory.BusinessRules), len(memory.Invariants))
 	}
 	return b.String(), nil
 }
@@ -1209,6 +1388,14 @@ func valueOr(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func firstText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "\n..."
 }
 
 func dockerCLIPathForDisplay() string {

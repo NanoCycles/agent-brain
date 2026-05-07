@@ -23,7 +23,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), agentStartCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), reviewPlanCmd(), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), agentStartCmd(ctx), changeStartCmd(ctx), changeCheckpointCmd(ctx), changeFinishCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), planGateCmd(ctx), reviewPlanCmd(), reviewSimulateCmd(ctx), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -566,7 +566,7 @@ func jiraCmd(ctx context.Context) *cobra.Command {
 func githubCmd(ctx context.Context) *cobra.Command {
 	root := &cobra.Command{Use: "github", Short: "Import GitHub PR review context for agents"}
 	var pr, repo, out, token string
-	var review, postSummary bool
+	var review, postSummary, learn bool
 	comments := &cobra.Command{
 		Use:   "review-comments",
 		Short: "Import GitHub PR comments into .ai/reviews and optionally build an agent repair plan",
@@ -604,6 +604,13 @@ func githubCmd(ctx context.Context) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout())
 				fmt.Fprint(cmd.OutOrStdout(), summary)
 			}
+			if learn {
+				path, memory, err := app.ReviewCommentsLearningProposal(result.Path, p.AIMemoryProposals)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\nReview learning proposal: %s\nRules: %d Invariants: %d\nHuman approval required before applying domain memory.\n", path, len(memory.BusinessRules), len(memory.Invariants))
+			}
 			return nil
 		},
 	}
@@ -613,6 +620,7 @@ func githubCmd(ctx context.Context) *cobra.Command {
 	comments.Flags().StringVar(&token, "token", "", "GitHub token; defaults to GITHUB_TOKEN or GH_TOKEN")
 	comments.Flags().BoolVar(&review, "review", true, "run review-comments after import")
 	comments.Flags().BoolVar(&postSummary, "post-summary", false, "post an agent-brain import summary comment back to the PR")
+	comments.Flags().BoolVar(&learn, "learn", false, "create a domain-memory proposal from recurring review comments; does not apply it")
 	root.AddCommand(comments)
 	return root
 }
@@ -756,6 +764,153 @@ func impactCmd(ctx context.Context) *cobra.Command {
 	return c
 }
 
+func planGateCmd(ctx context.Context) *cobra.Command {
+	var plan string
+	var task string
+	c := &cobra.Command{
+		Use:   "plan-gate",
+		Short: "Gate an agent implementation plan before broad edits",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if plan == "" {
+				return fmt.Errorf("--plan is required")
+			}
+			p, _ := paths.Discover(".")
+			_, summary, err := app.NewChangeIntelligenceService().PlanGate(ctx, p.Root, p.RulesDir, plan, task)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), summary)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&plan, "plan", "", "plan markdown path")
+	c.Flags().StringVar(&task, "task", "", "optional task markdown path")
+	return c
+}
+
+func reviewSimulateCmd(ctx context.Context) *cobra.Command {
+	var task string
+	c := &cobra.Command{
+		Use:   "review-simulate",
+		Short: "Simulate likely enterprise/external review findings from current diff",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			_, summary, err := app.NewChangeIntelligenceService().ReviewSimulate(ctx, p.Root, p.RulesDir, task)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), summary)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "optional task markdown path")
+	return c
+}
+
+func changeStartCmd(ctx context.Context) *cobra.Command {
+	var task, topic, budget string
+	var fast, noIndex bool
+	c := &cobra.Command{
+		Use:   "change-start",
+		Short: "Start an agent change with context, scope, checklist, and gated workflow guidance",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			cfg, _ := loadOrDefaultConfig(p)
+			store, err := sqlstore.New(p.SQLitePath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			graph := graphOrNil(p.ConfigPath)
+			if graph != nil {
+				defer graph.Close(ctx)
+			}
+			prepare := app.NewPrepareService(app.NewInitService(filesystem.LocalFS{}), dockerruntime.Runtime{}, golang.Indexer{}, store, graph)
+			result, err := app.NewAgentWorkflowService(prepare, store, graph).Start(ctx, p, cfg, app.AgentWorkflowOptions{
+				TaskPath:        task,
+				Topic:           topic,
+				Budget:          budget,
+				Fast:            fast,
+				NoIndex:         noIndex,
+				BootstrapMemory: true,
+				MemoryArea:      "all",
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), app.RenderAgentWorkflowResult(result))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "task markdown path")
+	c.Flags().StringVar(&topic, "topic", "", "topic text")
+	c.Flags().StringVar(&budget, "budget", app.BudgetCavernicola, "token budget")
+	c.Flags().BoolVar(&fast, "fast", true, "skip reindex if recent")
+	c.Flags().BoolVar(&noIndex, "no-index", false, "do not index")
+	return c
+}
+
+func changeCheckpointCmd(ctx context.Context) *cobra.Command {
+	var task string
+	c := &cobra.Command{
+		Use:   "change-checkpoint",
+		Short: "Run a mid-change review simulator checkpoint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			_, summary, err := app.NewChangeIntelligenceService().ReviewSimulate(ctx, p.Root, p.RulesDir, task)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), summary)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "optional task markdown path")
+	return c
+}
+
+func changeFinishCmd(ctx context.Context) *cobra.Command {
+	var task string
+	c := &cobra.Command{
+		Use:   "change-finish",
+		Short: "Finish an agent change with review simulation and memory proposals",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, _ := paths.Discover(".")
+			_, summary, err := app.NewChangeIntelligenceService().ReviewSimulate(ctx, p.Root, p.RulesDir, task)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), summary)
+			if task != "" {
+				store, err := sqlstore.New(p.SQLitePath)
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+				_ = store.Init(ctx)
+				memPath, _ := app.NewMemoryService(store).GenerateProposal(ctx, p.Root, task, p.AIMemoryProposals)
+				graph := graphOrNil(p.ConfigPath)
+				if graph != nil {
+					defer graph.Close(ctx)
+				}
+				domainPath, _, _ := app.NewDomainMemoryService(store, graph).Propose(ctx, p.Root, task, p.AIMemoryProposals, "")
+				if memPath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "\nImplementation memory proposal: %s\n", memPath)
+				}
+				if domainPath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Domain memory proposal: %s\nHuman approval required before applying memory.\n", domainPath)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&task, "task", "", "optional task markdown path")
+	return c
+}
+
 func reviewPlanCmd() *cobra.Command {
 	var plan string
 	c := &cobra.Command{
@@ -780,6 +935,7 @@ func reviewPlanCmd() *cobra.Command {
 
 func reviewCommentsCmd() *cobra.Command {
 	var file string
+	var learn bool
 	c := &cobra.Command{
 		Use:   "review-comments",
 		Short: "Turn code review comments into an agent repair plan",
@@ -792,10 +948,19 @@ func reviewCommentsCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprint(cmd.OutOrStdout(), summary)
+			if learn {
+				p, _ := paths.Discover(".")
+				path, memory, err := app.ReviewCommentsLearningProposal(file, p.AIMemoryProposals)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\nReview learning proposal: %s\nRules: %d Invariants: %d\nHuman approval required before applying domain memory.\n", path, len(memory.BusinessRules), len(memory.Invariants))
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&file, "file", "", "markdown/text file containing review comments")
+	c.Flags().BoolVar(&learn, "learn", false, "create a domain-memory proposal from recurring review comments; does not apply it")
 	return c
 }
 

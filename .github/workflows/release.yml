@@ -39,6 +39,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate agent skill packs
+        run: |
+          go run ./cmd/agent-brain skills generate --out dist/agent-skills
+          (cd dist && zip -r agent-brain-agent-skills.zip agent-skills)
+
+      - name: Upload agent skill packs
+        run: gh release upload "${GITHUB_REF_NAME}" dist/agent-brain-agent-skills.zip --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   chocolatey:
     needs: goreleaser
     runs-on: windows-latest
@@ -94,6 +104,11 @@ jobs:
 
       - name: Set package version
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+
+      - name: Generate npm skill packs
+        working-directory: .
+        run: |
+          go run ./cmd/agent-brain skills generate --out npm/agent-skills
 
       - name: Pack npm package
         run: npm pack

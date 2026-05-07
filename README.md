@@ -299,6 +299,30 @@ Today, the most portable way to make `agent-brain` appear inside agents is MCP p
 
 For marketplace-style distribution, publish the binary/package normally (`npm`, Chocolatey, GitHub Releases) and publish a tiny “agent-brain skill/rule pack” per ecosystem that only contains instructions. The skill should not duplicate code; it should tell the agent to use the MCP tools and the cavernicola budget by default.
 
+Generate those packs locally:
+
+```sh
+agent-brain skills generate
+```
+
+Install local agent instructions:
+
+```sh
+agent-brain skills install-codex
+agent-brain skills install-cursor
+agent-brain skills install-claude
+agent-brain skills install-copilot
+agent-brain skills install-antigravity
+```
+
+Release builds attach `agent-brain-agent-skills.zip` to GitHub Releases and include `agent-skills/` in the npm package. Ecosystem stores differ:
+
+- Codex local skills can be installed into `~/.codex/skills/agent-brain`.
+- Cursor uses project rules in `.cursor/rules/agent-brain.mdc`.
+- Claude uses project instructions such as `CLAUDE.agent-brain.md` or imported MCP instructions.
+- Copilot uses workspace instructions under `.github/instructions/`.
+- Antigravity and other agent IDEs should import the generic MCP guide and configure `agent-brain mcp serve`.
+
 The installers bind both `AGENT_BRAIN_REPO_ROOT` and, when detectable, `AGENT_BRAIN_DOCKER` so the MCP process can find Docker Desktop even when the IDE PATH is incomplete.
 
 After rebooting the machine, start Docker Desktop first, then run this in the project before asking the agent to code:

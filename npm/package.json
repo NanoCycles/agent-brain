@@ -15,6 +15,7 @@
     "postinstall": "node scripts/install.js"
   },
   "files": [
+    "agent-skills/",
     "bin/",
     "scripts/",
     "vendor/"

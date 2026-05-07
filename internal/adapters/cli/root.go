@@ -23,7 +23,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 		Use:   "agent-brain",
 		Short: "Local knowledge CLI for AI coding agents",
 	}
-	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), agentStartCmd(ctx), changeStartCmd(ctx), changeCheckpointCmd(ctx), changeFinishCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), planGateCmd(ctx), reviewPlanCmd(), reviewSimulateCmd(ctx), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
+	root.AddCommand(initCmd(ctx), upCmd(ctx), downCmd(ctx), destroyCmd(ctx), statusCmd(ctx), doctorCmd(ctx), logsCmd(ctx), prepareCmd(ctx), agentStartCmd(ctx), changeStartCmd(ctx), changeCheckpointCmd(ctx), changeFinishCmd(ctx), handoffCmd(), cleanContextCmd(), mcpCmd(ctx), skillsCmd(), jiraCmd(ctx), githubCmd(ctx), indexCmd(ctx), contextCmd(ctx), impactCmd(ctx), planGateCmd(ctx), reviewPlanCmd(), reviewSimulateCmd(ctx), reviewCommentsCmd(), reviewDiffCmd(ctx), memoryProposalCmd(ctx), memoryApplyCmd(ctx), domainMemoryCmd(ctx))
 	return root
 }
 
@@ -471,6 +471,112 @@ func mcpCmd(ctx context.Context) *cobra.Command {
 
 func printMCPInstallResult(cmd *cobra.Command, name string, result app.MCPInstallResult) {
 	fmt.Fprintf(cmd.OutOrStdout(), "%s MCP configured: %s\nCommand: %s\nChanged: %s\n", name, result.ConfigPath, result.Command, yesNo(result.Changed))
+	if result.BackupPath != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Backup: %s\n", result.BackupPath)
+	}
+}
+
+func skillsCmd() *cobra.Command {
+	root := &cobra.Command{Use: "skills", Short: "Generate or install agent-brain skill/rule packs for agent IDEs"}
+	var out string
+	generate := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate portable skill/rule packs for Codex, Cursor, Claude, Copilot, Antigravity, and generic MCP agents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			packs, err := app.GenerateAgentSkillPacks(out)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Generated agent skill packs: %d\n", len(packs))
+			for _, pack := range packs {
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", pack.Target, pack.Path)
+			}
+			return nil
+		},
+	}
+	generate.Flags().StringVar(&out, "out", filepath.Join(".agent-brain", "agent-skills"), "output directory")
+	installCodex := &cobra.Command{
+		Use:   "install-codex",
+		Short: "Install the local Codex skill into ~/.codex/skills/agent-brain",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := app.InstallCodexSkill()
+			if err != nil {
+				return err
+			}
+			printSkillInstallResult(cmd, result)
+			return nil
+		},
+	}
+	installCursor := &cobra.Command{
+		Use:   "install-cursor",
+		Short: "Install Cursor project rules into .cursor/rules/agent-brain.mdc",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.InstallCursorRules(p.Root)
+			if err != nil {
+				return err
+			}
+			printSkillInstallResult(cmd, result)
+			return nil
+		},
+	}
+	installClaude := &cobra.Command{
+		Use:   "install-claude",
+		Short: "Install a Claude agent guide into CLAUDE.agent-brain.md",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.InstallClaudeGuide(p.Root)
+			if err != nil {
+				return err
+			}
+			printSkillInstallResult(cmd, result)
+			return nil
+		},
+	}
+	installCopilot := &cobra.Command{
+		Use:   "install-copilot",
+		Short: "Install GitHub Copilot workspace instructions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.InstallCopilotInstructions(p.Root)
+			if err != nil {
+				return err
+			}
+			printSkillInstallResult(cmd, result)
+			return nil
+		},
+	}
+	installAntigravity := &cobra.Command{
+		Use:   "install-antigravity",
+		Short: "Generate an Antigravity/generic MCP guide for this repo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.Discover(".")
+			if err != nil {
+				return err
+			}
+			result, err := app.InstallAntigravityGuide(p.Root)
+			if err != nil {
+				return err
+			}
+			printSkillInstallResult(cmd, result)
+			return nil
+		},
+	}
+	root.AddCommand(generate, installCodex, installCursor, installClaude, installCopilot, installAntigravity)
+	return root
+}
+
+func printSkillInstallResult(cmd *cobra.Command, result app.AgentSkillInstallResult) {
+	fmt.Fprintf(cmd.OutOrStdout(), "%s skill/rules installed: %s\nChanged: %s\n", result.Target, result.Path, yesNo(result.Changed))
 	if result.BackupPath != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "Backup: %s\n", result.BackupPath)
 	}
